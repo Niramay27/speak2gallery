@@ -1,0 +1,5594 @@
+Directory structure:
+└── speak2gallery/
+    ├── README.md
+    ├── data_coco_tts.py
+    ├── data_coco_tts_multilingual.py
+    ├── requirements.txt
+    ├── run_all.sh
+    ├── app/
+    │   ├── app.py
+    │   ├── README_HTTPS.md
+    │   └── static/
+    │       └── index.html
+    ├── data/
+    │   ├── make_coco_tts_manifest.py
+    │   ├── make_multilingual_coco_tts_manifest.py
+    │   ├── split.py
+    │   └── split_multilingual_manifest.py
+    ├── evaluation/
+    │   ├── eval_retrieval_multilingual_base.py
+    │   ├── eval_retrieval_multilingual_cnn.py
+    │   └── eval_retrieval_multilingual_whisper.py
+    ├── models/
+    │   ├── models_cnn.py
+    │   └── models_whisper.py
+    ├── retrieval/
+    │   ├── build_image_index.py
+    │   ├── build_tag_index.py
+    │   ├── hybrid_retrieval.py
+    │   ├── query_processor.py
+    │   └── retrieve_from_audio.py
+    ├── scripts/
+    │   ├── 01_build_dataset.sh
+    │   ├── 02_train.sh
+    │   ├── 03_build_index.sh
+    │   ├── 04_evaluate.sh
+    │   └── 05_run_app.sh
+    └── training/
+        ├── train_bridge_multilingual_cnn.py
+        └── train_bridge_multilingual_whisper.py
+
+================================================
+FILE: README.md
+================================================
+# Speak2Gallery — Language-Bridged Audio–Image Retrieval
+
+A multilingual zero-shot speech-to-image retrieval system. Speak in English, Hindi, or Bengali to retrieve semantically matching images from a COCO-based gallery.
+
+---
+
+## Project Structure
+
+```
+speak2gallery/
+│
+├── data/
+│   ├── make_coco_tts_manifest.py             # Step 1: Build English manifest + TTS
+│   ├── make_multilingual_coco_tts_manifest.py  # Step 2: Translate + multilingual TTS
+│   ├── split.py                              # Step 3: Split English dataset
+│   └── split_multilingual_manifest.py        # Step 4: Split multilingual dataset
+│
+├── models/
+│   ├── models_cnn.py                         # CNN audio encoder
+│   └── models_whisper.py                     # Whisper audio encoder
+│
+├── training/
+│   ├── train_bridge_multilingual_cnn.py      # Train CNN (multilingual)
+│   └── train_bridge_multilingual_whisper.py  # Train Whisper (multilingual) ← BEST
+│
+├── evaluation/
+│   ├── eval_retrieval_multilingual_base.py   # Eval random baseline
+│   ├── eval_retrieval_multilingual_cnn.py    # Eval CNN (multilingual)
+│   └── eval_retrieval_multilingual_whisper.py # Eval Whisper (multilingual)
+│
+├── retrieval/
+│   ├── build_image_index.py                  # Pre-build CLIP image index
+│   ├── build_tag_index.py                    # Pre-build keyword tag index
+│   ├── hybrid_retrieval.py                   # Hybrid semantic + tag retrieval
+│   ├── query_processor.py                    # Query normalization + extraction
+│   └── retrieve_from_audio.py               # Single audio file → top-K images
+│
+├── app/
+│   ├── app.py                                # Flask API server
+│   ├── static/
+│   │   └── index.html                        # Web frontend
+│   └── README_HTTPS.md                       # HTTPS setup notes
+│
+├── scripts/
+│   ├── 01_build_dataset.sh                   # Dataset creation pipeline
+│   ├── 02_train.sh                           # Training pipeline
+│   ├── 03_build_index.sh                     # Index building
+│   ├── 04_evaluate.sh                        # Evaluation pipeline
+│   └── 05_run_app.sh                         # Launch web application
+│
+├── data_coco_tts.py                          # Dataset loader (English)
+├── data_coco_tts_multilingual.py             # Dataset loader (multilingual)
+├── requirements.txt
+└── run_all.sh                                # End-to-end runner
+```
+
+All generated files (manifests, audio, model checkpoints, indexes) are saved **directly in the project root** — no extra output directory is needed.
+
+---
+
+## Prerequisites
+
+### System Requirements
+
+- Python 3.10+
+- CUDA-capable GPU (recommended; CPU works but is slow for training)
+- ~20 GB disk for COCO dataset + generated audio files
+
+### Install Dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+For HTTPS support in the web app:
+```bash
+pip install flask flask-cors cryptography
+```
+
+For spaCy query extraction (recommended):
+```bash
+python -m spacy download en_core_web_sm
+```
+
+For microphone recording (CLI demo only):
+```bash
+pip install sounddevice soundfile
+```
+
+---
+
+## COCO Dataset — Required Before Running
+
+You must download the MS-COCO 2017 dataset and tell the pipeline where it lives.
+
+### 1. Download COCO
+
+```bash
+# Create a directory for the dataset (any location you choose)
+mkdir -p /path/to/your/coco_dataset
+
+# Download train2017 images (~18 GB)
+wget http://images.cocodataset.org/zips/train2017.zip
+unzip train2017.zip -d /path/to/your/coco_dataset/
+
+# Download annotations (~241 MB)
+wget http://images.cocodataset.org/annotations/annotations_trainval2017.zip
+unzip annotations_trainval2017.zip -d /path/to/your/coco_dataset/
+```
+
+After extraction you should have:
+```
+/path/to/your/coco_dataset/
+├── train2017/          ← ~118k JPEG images
+└── annotations/
+    └── captions_train2017.json
+```
+
+### 2. Set the Paths in the Dataset Script
+
+Open `scripts/01_build_dataset.sh` and edit the two lines at the top of the CONFIG section:
+
+```bash
+# Path to your COCO train2017 images directory
+COCO_IMAGES="/path/to/your/coco_dataset/train2017"
+
+# Path to the COCO captions annotation JSON
+COCO_CAPTIONS="/path/to/your/coco_dataset/annotations/captions_train2017.json"
+```
+
+You can also set the number of captions to use:
+
+```bash
+LIMIT=5000   # Use 5000 captions (good for quick experiments)
+             # Set to 0 to use all ~591k captions (full dataset)
+```
+
+> **Tip:** Start with `LIMIT=1000` for a fast smoke-test, then increase for real training.
+
+---
+
+## Dynamic Output Directory
+
+**All output files are saved automatically into the project root** — the directory that contains `run_all.sh`. You do not need to set or change any output path. The scripts detect their own location at runtime:
+
+```
+speak2gallery/                  ← project root (OUT_DIR)
+├── coco_train_tts.jsonl
+├── coco_train_tts_multilingual.jsonl
+├── coco_train_tts_multilingual_train.jsonl
+├── coco_train_tts_multilingual_val.jsonl
+├── tts_wavs/                   ← English TTS audio
+├── tts_wavs_multilingual/
+│   ├── hi/                     ← Hindi TTS audio
+│   └── bn/                     ← Bengali TTS audio
+├── image_index.pt              ← CLIP image index (Stage 3)
+├── coco_tags.json              ← Tag index (Stage 3)
+└── audio_encoder_multilingual.pt  ← Trained model (Stage 2)
+```
+
+---
+
+## End-to-End Pipeline
+
+### Quick Start (Run Everything)
+
+```bash
+chmod +x run_all.sh scripts/*.sh
+
+# Edit COCO_IMAGES and COCO_CAPTIONS in scripts/01_build_dataset.sh first!
+./run_all.sh
+```
+
+Or run each stage individually:
+
+---
+
+### Stage 1 — Build Dataset
+
+```bash
+# Edit COCO paths inside the script first (see "COCO Dataset" section above)
+./scripts/01_build_dataset.sh
+```
+
+What it does:
+1. Generates English TTS audio for COCO captions using `edge-tts`
+2. Creates the English manifest JSONL
+3. Translates captions to Hindi + Bengali using NLLB-200
+4. Generates Hindi and Bengali TTS audio
+5. Splits all manifests into train/val sets
+
+**Required config** inside `scripts/01_build_dataset.sh`:
+```bash
+COCO_IMAGES="/path/to/your/coco_dataset/train2017"
+COCO_CAPTIONS="/path/to/your/coco_dataset/annotations/captions_train2017.json"
+LIMIT=5000   # number of captions to use (0 = all)
+```
+
+---
+
+### Stage 2 — Train the Audio Encoder
+
+```bash
+./scripts/02_train.sh             # Whisper encoder (default, best model)
+MODEL=cnn ./scripts/02_train.sh   # CNN encoder (faster, lower accuracy)
+```
+
+Outputs saved to project root:
+- `audio_encoder_multilingual.pt` — Whisper encoder
+- `audio_encoder_cnn_multilingual.pt` — CNN encoder (if MODEL=cnn)
+
+---
+
+### Stage 3 — Build Retrieval Indexes
+
+```bash
+./scripts/03_build_index.sh
+```
+
+Outputs saved to project root:
+- `image_index.pt` — CLIP image embeddings
+- `coco_tags.json` — per-image keyword tags
+
+---
+
+### Stage 4 — Evaluate
+
+```bash
+MODEL=whisper ./scripts/04_evaluate.sh    # default
+MODEL=cnn     ./scripts/04_evaluate.sh
+MODEL=base    ./scripts/04_evaluate.sh    # random baseline
+```
+
+Reports R@1, R@5, R@10, MRR, and Median Rank per language (EN / HI / BN) and combined.
+
+---
+
+### Stage 5 — Launch Web Application
+
+```bash
+./scripts/05_run_app.sh
+```
+
+Open: `http://localhost:5000`
+
+For HTTPS (required for microphone from remote browsers):
+```bash
+SSL_ADHOC=1 APP_PUBLIC_HOST=YOUR_SERVER_IP ./scripts/05_run_app.sh
+```
+
+Open: `https://YOUR_SERVER_IP:5000` and accept the self-signed certificate.
+
+---
+
+## Retrieve from a Single Audio File
+
+```bash
+python retrieval/retrieve_from_audio.py \
+  --audio      query.wav \
+  --index      image_index.pt \
+  --checkpoint audio_encoder_multilingual.pt \
+  --tag_index  coco_tags.json \
+  --top_k 9 \
+  --alpha 0.7
+```
+
+---
+
+## Web Application
+
+The Flask app (`app/app.py`) exposes these endpoints:
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/` | GET | Serves the web UI |
+| `/api/search/text` | POST | JSON `{"query": "...", "top_k": 9}` |
+| `/api/search/audio` | POST | Multipart form with `audio` file |
+| `/api/status` | GET | Health check |
+
+Run directly:
+```bash
+cd speak2gallery
+python app/app.py
+```
+
+---
+
+## Environment Variables (App)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PROJECT_DIR` | auto-detected | Override project root (where indexes and checkpoints live) |
+| `COCO_DIRS` | `<project_root>/coco_dataset/train2017:<project_root>/coco_dataset/val2017` | Colon-separated list of COCO image directories |
+| `HOST` | `0.0.0.0` | Bind address |
+| `PORT` | `5000` | Port |
+| `APP_PUBLIC_HOST` | `localhost` | Displayed in startup banner |
+| `SSL_ADHOC` | `0` | `1` = self-signed HTTPS |
+| `SSL_CERT_FILE` | — | Path to TLS certificate |
+| `SSL_KEY_FILE` | — | Path to TLS private key |
+| `FORCE_HTTPS` | `0` | `1` = redirect HTTP → HTTPS |
+| `WHISPER_NAME` | `openai/whisper-medium` | Whisper model for audio search |
+
+---
+
+## Model Checkpoints
+
+| File | Description |
+|------|-------------|
+| `audio_encoder_multilingual.pt` | **Main model** — Whisper (small) + projection, multilingual |
+| `audio_encoder_cnn_multilingual.pt` | CNN encoder, multilingual |
+
+---
+
+## Results Summary
+
+### Audio → Image Retrieval (multilingual val set)
+
+| Model | R@1 | R@5 | R@10 | Median Rank |
+|-------|-----|-----|------|-------------|
+| Random Baseline | 0.48% | 2.42% | 4.83% | 102 |
+| CNN (from scratch) | 10.63% | 32.37% | 45.89% | 12 |
+| **Whisper (frozen + proj)** | **33.82%** | **70.05%** | **84.06%** | **3** |
+
+### Image → Audio Retrieval (multilingual val set)
+
+| Model | R@1 | R@5 | R@10 | Median Rank |
+|-------|-----|-----|------|-------------|
+| Random Baseline | 0.48% | 3.38% | 4.83% | 105 |
+| CNN (from scratch) | 7.73% | 28.50% | 41.06% | 17 |
+| **Whisper (frozen + proj)** | **26.09%** | **65.22%** | **78.26%** | **3** |
+
+
+================================================
+FILE: data_coco_tts.py
+================================================
+import json
+import torch
+import torchaudio
+from torch.utils.data import Dataset
+from torch.nn.utils.rnn import pad_sequence
+from PIL import Image
+
+class CocoTtsTriples(Dataset):
+    def __init__(self, manifest_jsonl, clip_preprocess, clip_tokenizer,
+                 sample_rate=16000, n_mels=80):
+        self.rows = []
+        with open(manifest_jsonl, "r", encoding="utf-8") as f:
+            for line in f:
+                self.rows.append(json.loads(line))
+
+        self.clip_preprocess = clip_preprocess
+        self.clip_tokenizer = clip_tokenizer
+        self.sample_rate = sample_rate
+
+        self.melspec = torchaudio.transforms.MelSpectrogram(
+            sample_rate=sample_rate,
+            n_fft=400,
+            hop_length=160,
+            n_mels=n_mels
+        )
+        self.db = torchaudio.transforms.AmplitudeToDB(stype="power")
+
+    def __len__(self):
+        return len(self.rows)
+
+    def load_audio(self, path):
+        wav, sr = torchaudio.load(path)  # [C, T]
+        wav = wav.mean(dim=0, keepdim=True)  # mono
+
+        if sr != self.sample_rate:
+            wav = torchaudio.functional.resample(wav, sr, self.sample_rate)
+
+        mel = self.melspec(wav)         # [1, n_mels, frames]
+        mel = self.db(mel).squeeze(0)   # [n_mels, frames]
+
+        mel = (mel - mel.mean()) / (mel.std() + 1e-6)
+        return mel
+
+    def __getitem__(self, idx):
+        row = self.rows[idx]
+
+        image = Image.open(row["image_path"]).convert("RGB")
+        image = self.clip_preprocess(image)
+
+        text_tokens = self.clip_tokenizer([row["caption"]])[0]
+
+        mel = self.load_audio(row["audio_path"])
+
+        return {
+            "image": image,
+            "text_tokens": text_tokens,
+            "mel": mel,
+            "caption": row["caption"],
+            "image_path": row["image_path"],
+            "audio_path": row["audio_path"],
+        }
+
+def collate_coco_tts(batch):
+    images = torch.stack([x["image"] for x in batch], dim=0)
+    text_tokens = torch.stack([x["text_tokens"] for x in batch], dim=0)
+
+    mels = [x["mel"].transpose(0, 1) for x in batch]   # [T, n_mels]
+    mels = pad_sequence(mels, batch_first=True)        # [B, T, n_mels]
+    mels = mels.transpose(1, 2)                        # [B, n_mels, T]
+
+    return {
+        "image": images,
+        "text_tokens": text_tokens,
+        "mel": mels,
+        "caption": [x["caption"] for x in batch],
+        "image_path": [x["image_path"] for x in batch],
+        "audio_path": [x["audio_path"] for x in batch],
+    }
+
+
+================================================
+FILE: data_coco_tts_multilingual.py
+================================================
+import json
+import torch
+import torchaudio
+from torch.utils.data import Dataset
+from torch.nn.utils.rnn import pad_sequence
+from PIL import Image
+
+
+class CocoTtsMultilingual(Dataset):
+    def __init__(self, manifest_jsonl, clip_preprocess, clip_tokenizer,
+                 sample_rate=16000, n_mels=80):
+        self.rows = []
+        with open(manifest_jsonl, "r", encoding="utf-8") as f:
+            for line in f:
+                self.rows.append(json.loads(line))
+
+        self.clip_preprocess = clip_preprocess
+        self.clip_tokenizer = clip_tokenizer
+        self.sample_rate = sample_rate
+
+        self.melspec = torchaudio.transforms.MelSpectrogram(
+            sample_rate=sample_rate,
+            n_fft=400,
+            hop_length=160,
+            n_mels=n_mels
+        )
+        self.db = torchaudio.transforms.AmplitudeToDB(stype="power")
+
+    def __len__(self):
+        return len(self.rows)
+
+    def load_audio(self, path):
+        wav, sr = torchaudio.load(path)
+        wav = wav.mean(dim=0, keepdim=True)
+
+        if sr != self.sample_rate:
+            wav = torchaudio.functional.resample(wav, sr, self.sample_rate)
+
+        mel = self.melspec(wav)
+        mel = self.db(mel).squeeze(0)
+        mel = (mel - mel.mean()) / (mel.std() + 1e-6)
+        return mel
+
+    def __getitem__(self, idx):
+        row = self.rows[idx]
+
+        image = Image.open(row["image_path"]).convert("RGB")
+        image = self.clip_preprocess(image)
+
+        english_text_tokens = self.clip_tokenizer([row["english_caption"]])[0]
+        mel = self.load_audio(row["audio_path"])
+
+        return {
+            "image": image,
+            "text_tokens": english_text_tokens,
+            "mel": mel,
+            "lang": row["lang"],
+            "caption": row["caption"],
+            "english_caption": row["english_caption"],
+            "image_path": row["image_path"],
+            "audio_path": row["audio_path"],
+        }
+
+
+def collate_coco_tts_multilingual(batch):
+    images = torch.stack([x["image"] for x in batch], dim=0)
+    text_tokens = torch.stack([x["text_tokens"] for x in batch], dim=0)
+
+    mels = [x["mel"].transpose(0, 1) for x in batch]   # [T, n_mels]
+    mels = pad_sequence(mels, batch_first=True)        # [B, T, n_mels]
+    mels = mels.transpose(1, 2)                        # [B, n_mels, T]
+
+    return {
+        "image": images,
+        "text_tokens": text_tokens,
+        "mel": mels,
+        "lang": [x["lang"] for x in batch],
+        "caption": [x["caption"] for x in batch],
+        "english_caption": [x["english_caption"] for x in batch],
+        "image_path": [x["image_path"] for x in batch],
+        "audio_path": [x["audio_path"] for x in batch],
+    }
+
+
+================================================
+FILE: requirements.txt
+================================================
+aiohappyeyeballs==2.6.1
+aiohttp==3.13.3
+aiosignal==1.4.0
+annotated-doc==0.0.4
+annotated-types==0.7.0
+anyio==4.12.1
+async-timeout==5.0.1
+attrs==25.4.0
+beautifulsoup4==4.14.3
+certifi==2026.2.25
+charset-normalizer==3.4.5
+click==8.3.1
+coloredlogs==15.0.1
+contourpy==1.3.2
+cuda-bindings==12.9.4
+cuda-pathfinder==1.4.0
+cycler==0.12.1
+deep-translator==1.11.4
+edge-tts==7.2.7
+eido==0.2.5
+exceptiongroup==1.3.1
+filelock==3.25.0
+flatbuffers==25.12.19
+fonttools==4.62.1
+frozenlist==1.8.0
+fsspec==2026.2.0
+ftfy==6.3.1
+h11==0.16.0
+hf-xet==1.3.2
+httpcore==1.0.9
+httpx==0.28.1
+huggingface_hub==1.5.0
+humanfriendly==10.0
+idna==3.11
+imagecorruptions==1.1.2
+ImageIO==2.37.3
+Jinja2==3.1.6
+joblib==1.5.3
+jsonschema==4.26.0
+jsonschema-specifications==2025.9.1
+kiwisolver==1.5.0
+lazy-loader==0.5
+logmuse==0.3.0
+markdown-it-py==4.0.0
+MarkupSafe==3.0.3
+matplotlib==3.10.8
+mdurl==0.1.2
+mpmath==1.3.0
+multidict==6.7.1
+networkx==3.4.2
+numpy==1.26.4
+nvidia-cublas-cu12==12.8.4.1
+nvidia-cuda-cupti-cu12==12.8.90
+nvidia-cuda-nvrtc-cu12==12.8.93
+nvidia-cuda-runtime-cu12==12.8.90
+nvidia-cudnn-cu12==9.10.2.21
+nvidia-cufft-cu12==11.3.3.83
+nvidia-cufile-cu12==1.13.1.3
+nvidia-curand-cu12==10.3.9.90
+nvidia-cusolver-cu12==11.7.3.90
+nvidia-cusparse-cu12==12.5.8.93
+nvidia-cusparselt-cu12==0.7.1
+nvidia-nccl-cu12==2.27.5
+nvidia-nvjitlink-cu12==12.8.93
+nvidia-nvshmem-cu12==3.4.5
+nvidia-nvtx-cu12==12.8.90
+onnxruntime==1.23.2
+open_clip_torch==3.3.0
+opencv-python==4.11.0.86
+pandas==2.3.3
+pephubclient==0.5.0
+peppy==0.40.8
+pillow==12.1.1
+piper==0.15.1
+pipestat==0.13.1
+propcache==0.4.1
+protobuf==7.34.0
+psutil==7.2.2
+pydantic==2.12.5
+pydantic_core==2.41.5
+Pygments==2.19.2
+pyparsing==3.3.2
+python-dateutil==2.9.0.post0
+pytz==2026.1.post1
+PyWavelets==1.8.0
+PyYAML==6.0.3
+referencing==0.37.0
+regex==2026.2.28
+requests==2.32.5
+rich==14.3.3
+rpds-py==0.30.0
+safetensors==0.7.0
+scikit-image==0.19.3
+scikit-learn==1.7.2
+scipy==1.15.3
+sentencepiece==0.2.1
+shellingham==1.5.4
+six==1.17.0
+soupsieve==2.8.3
+sympy==1.14.0
+tabulate==0.10.0
+threadpoolctl==3.6.0
+tifffile==2025.5.10
+timm==1.0.25
+tokenizers==0.22.2
+torch==2.10.0
+torchaudio==2.10.0
+torchcodec==0.10.0
+torchvision==0.25.0
+tqdm==4.67.3
+transformers==5.3.0
+triton==3.6.0
+typer==0.24.1
+typing-inspection==0.4.2
+typing_extensions==4.15.0
+tzdata==2025.3
+ubiquerg==0.9.1
+urllib3==2.6.3
+wcwidth==0.6.0
+yacman==1.0.0
+yarl==1.23.0
+
+
+
+================================================
+FILE: run_all.sh
+================================================
+[Binary file]
+
+
+================================================
+FILE: app/app.py
+================================================
+#!/usr/bin/env python3
+"""
+speak2gallery Flask API
+=======================
+Run from the project root (speak2gallery/):
+
+    python app/app.py
+
+Or with HTTPS (self-signed):
+    SSL_ADHOC=1 APP_PUBLIC_HOST=YOUR_IP python app/app.py
+
+Environment variables
+---------------------
+PROJECT_DIR   — override auto-detected project root (directory containing app/)
+COCO_DIRS     — colon-separated list of COCO image directories
+                default: <project_root>/coco_dataset/train2017:<project_root>/coco_dataset/val2017
+HOST          — bind address (default 0.0.0.0)
+PORT          — port (default 5000)
+APP_PUBLIC_HOST — displayed in startup banner (default localhost)
+SSL_ADHOC     — 1 = generate self-signed cert
+SSL_CERT_FILE — path to TLS certificate
+SSL_KEY_FILE  — path to TLS private key
+FORCE_HTTPS   — 1 = redirect HTTP → HTTPS
+
+Endpoints:
+    GET  /                          -> serves index.html
+    GET  /image/<token>             -> serves COCO images by absolute path
+    POST /api/search/text           -> text query -> top-k images
+    POST /api/search/audio          -> audio file -> top-k images
+    GET  /api/status                -> health check
+"""
+
+import os
+import sys
+import json
+import base64
+import tempfile
+import traceback
+from pathlib import Path
+
+from flask import Flask, request, jsonify, send_file, send_from_directory, abort, redirect
+from flask_cors import CORS
+from werkzeug.middleware.proxy_fix import ProxyFix
+
+# ── Resolve project root (the directory that contains this app/ folder) ──────
+_APP_DIR     = Path(__file__).resolve().parent          # …/speak2gallery/app
+PROJECT_DIR  = Path(os.getenv("PROJECT_DIR", str(_APP_DIR.parent)))  # …/speak2gallery
+
+# Add project root to sys.path so that retrieval/, models/, etc. are importable
+for _p in [str(PROJECT_DIR), str(PROJECT_DIR / "retrieval"), str(PROJECT_DIR / "models")]:
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+app = Flask(__name__, static_folder="static", template_folder="static")
+app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
+CORS(app)
+
+# ── COCO image directories ────────────────────────────────────────────────────
+_default_coco = ":".join([
+    str(PROJECT_DIR / "coco_dataset" / "train2017"),
+    str(PROJECT_DIR / "coco_dataset" / "val2017"),
+])
+COCO_DIRS = [Path(d) for d in os.getenv("COCO_DIRS", _default_coco).split(":") if d]
+
+# ── Config ───────────────────────────────────────────────────────────────────
+CONFIG = {
+    "image_index_path":  str(PROJECT_DIR / "image_index.pt"),
+    "checkpoint_path":   str(PROJECT_DIR / "audio_encoder_multilingual.pt"),
+    "tag_index_path":    str(PROJECT_DIR / "coco_tags.json"),
+    "whisper_name":      os.getenv("WHISPER_NAME", "openai/whisper-small"),
+    "embed_dim":         512,
+    "n_mels":            80,
+    "default_top_k":     9,
+    "default_alpha":     0.7,
+}
+
+_retriever        = None
+_audio_model      = None
+_query_processor  = None
+_device           = None
+
+
+def env_flag(name: str, default: str = "0") -> bool:
+    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def get_ssl_context():
+    cert_file = os.getenv("SSL_CERT_FILE", "").strip()
+    key_file  = os.getenv("SSL_KEY_FILE",  "").strip()
+    use_adhoc = env_flag("SSL_ADHOC")
+
+    if cert_file or key_file:
+        if not cert_file or not key_file:
+            raise RuntimeError("Both SSL_CERT_FILE and SSL_KEY_FILE must be set together.")
+        cert_path = Path(cert_file)
+        key_path  = Path(key_file)
+        if not cert_path.exists():
+            raise FileNotFoundError(f"SSL certificate not found: {cert_path}")
+        if not key_path.exists():
+            raise FileNotFoundError(f"SSL key not found: {key_path}")
+        return (str(cert_path), str(key_path))
+
+    if use_adhoc:
+        return "adhoc"
+
+    return None
+
+
+def get_device():
+    global _device
+    if _device is None:
+        import torch
+        _device = "cuda" if torch.cuda.is_available() else "cpu"
+        print(f"[app] Device: {_device}")
+    return _device
+
+
+def get_retriever():
+    global _retriever
+    if _retriever is None:
+        print("[app] Loading HybridRetriever…")
+        from hybrid_retrieval import HybridRetriever
+        _retriever = HybridRetriever(
+            image_index_path=CONFIG["image_index_path"],
+            tag_index_path=CONFIG["tag_index_path"] if Path(CONFIG["tag_index_path"]).exists() else None,
+            alpha=CONFIG["default_alpha"],
+            device=get_device(),
+        )
+        print("[app] HybridRetriever ready.")
+    return _retriever
+
+
+def get_audio_model():
+    global _audio_model
+    if _audio_model is None:
+        print("[app] Loading WhisperAudioEncoder…")
+        import torch
+        from models_whisper import WhisperAudioEncoder
+        device = get_device()
+        model  = WhisperAudioEncoder(
+            whisper_name=CONFIG["whisper_name"],
+            embed_dim=CONFIG["embed_dim"],
+            freeze_encoder=True,
+        ).to(device)
+        state = torch.load(CONFIG["checkpoint_path"], map_location=device)
+        model.load_state_dict(state)
+        model.eval()
+        _audio_model = model
+        print("[app] WhisperAudioEncoder ready.")
+    return _audio_model
+
+
+def get_query_processor():
+    global _query_processor
+    if _query_processor is None:
+        print("[app] Loading QueryProcessor…")
+        from query_processor import QueryProcessor
+        _query_processor = QueryProcessor(translate=False, use_spacy=True)
+        print("[app] QueryProcessor ready.")
+    return _query_processor
+
+
+@app.before_request
+def force_https_redirect_if_requested():
+    if not env_flag("FORCE_HTTPS"):
+        return None
+    host = request.host.split(":")[0]
+    if host in {"localhost", "127.0.0.1"}:
+        return None
+    forwarded_proto = request.headers.get("X-Forwarded-Proto", request.scheme)
+    if request.is_secure or forwarded_proto == "https":
+        return None
+    return redirect(request.url.replace("http://", "https://", 1), code=301)
+
+
+@app.after_request
+def add_security_headers(response):
+    response.headers["Permissions-Policy"] = "microphone=(self)"
+    forwarded_proto = request.headers.get("X-Forwarded-Proto", request.scheme)
+    if request.is_secure or forwarded_proto == "https":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
+
+
+# ── Audio helpers ─────────────────────────────────────────────────────────────
+
+def load_and_preprocess_audio(audio_path, sample_rate=16000, n_mels=80):
+    import torch
+    import torchaudio
+    wav, sr = torchaudio.load(audio_path)
+    wav = wav.mean(dim=0, keepdim=True)
+    if sr != sample_rate:
+        wav = torchaudio.functional.resample(wav, sr, sample_rate)
+    melspec = torchaudio.transforms.MelSpectrogram(
+        sample_rate=sample_rate, n_fft=400, hop_length=160, n_mels=n_mels)
+    db  = torchaudio.transforms.AmplitudeToDB(stype="power")
+    mel = db(melspec(wav))
+    mel = (mel - mel.mean()) / (mel.std() + 1e-6)
+    return mel
+
+
+def transcribe_audio(audio_path, model_size="small"):
+    try:
+        import whisper
+        model  = whisper.load_model(model_size)
+        result = model.transcribe(audio_path, fp16=False)
+        return {"text": result["text"].strip(), "language": result.get("language", "en")}
+    except ImportError:
+        try:
+            from transformers import pipeline as hf_pipeline
+            import torchaudio
+            pipe = hf_pipeline("automatic-speech-recognition",
+                                model=f"openai/whisper-{model_size}", device=-1)
+            wav, sr = torchaudio.load(audio_path)
+            wav = wav.mean(0)
+            if sr != 16000:
+                wav = torchaudio.functional.resample(wav, sr, 16000)
+            result = pipe({"raw": wav.numpy(), "sampling_rate": 16000})
+            return {"text": result["text"].strip(), "language": "en"}
+        except Exception as e:
+            return {"text": "", "language": "en", "error": str(e)}
+    except Exception as e:
+        return {"text": "", "language": "en", "error": str(e)}
+
+
+def format_results(raw_results):
+    out = []
+    for r in raw_results:
+        img_path = r["image_path"]
+        encoded  = base64.urlsafe_b64encode(img_path.encode()).decode()
+        out.append({
+            "rank":           r["rank"],
+            "image_token":    encoded,
+            "image_filename": Path(img_path).name,
+            "semantic_score": round(r["semantic_score"], 6),
+            "tag_score":      round(r["tag_score"],      6),
+            "final_score":    round(r["final_score"],    6),
+        })
+    return out
+
+
+# ── Routes ────────────────────────────────────────────────────────────────────
+
+@app.route("/")
+def index():
+    return send_from_directory("static", "index.html")
+
+
+@app.route("/image/<token>")
+def serve_image(token):
+    try:
+        img_path = base64.urlsafe_b64decode(token.encode()).decode()
+        p = Path(img_path)
+        if not p.exists():
+            abort(404)
+        allowed = any(str(p).startswith(str(d)) for d in COCO_DIRS)
+        if not allowed:
+            abort(403)
+        return send_file(str(p), mimetype="image/jpeg")
+    except Exception:
+        abort(400)
+
+
+@app.route("/api/status")
+def status():
+    import torch
+    ssl_enabled = bool(request.is_secure or
+                       request.headers.get("X-Forwarded-Proto") == "https")
+    return jsonify({
+        "status":             "ok",
+        "device":             get_device(),
+        "cuda":               torch.cuda.is_available(),
+        "index_exists":       Path(CONFIG["image_index_path"]).exists(),
+        "checkpoint_exists":  Path(CONFIG["checkpoint_path"]).exists(),
+        "tag_index_exists":   Path(CONFIG["tag_index_path"]).exists(),
+        "https":              ssl_enabled,
+    })
+
+
+@app.route("/api/search/text", methods=["POST"])
+def search_text():
+    try:
+        data     = request.get_json()
+        query    = (data.get("query") or "").strip()
+        top_k    = int(data.get("top_k",  CONFIG["default_top_k"]))
+        alpha    = float(data.get("alpha", CONFIG["default_alpha"]))
+        src_lang = data.get("lang", "auto")
+
+        if not query:
+            return jsonify({"error": "query is required"}), 400
+
+        qp = get_query_processor()
+        qc = qp.process(query, src_lang=src_lang)
+
+        retriever       = get_retriever()
+        retriever.alpha = alpha
+        raw             = retriever.retrieve(qc, top_k=top_k)
+
+        return jsonify({
+            "query":      query,
+            "normalized": qc.normalized_text,
+            "objects":    qc.objects,
+            "attributes": qc.attributes,
+            "relations":  qc.relations,
+            "keywords":   qc.all_keywords,
+            "results":    format_results(raw),
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/search/audio", methods=["POST"])
+def search_audio():
+    try:
+        import torch
+        import torch.nn.functional as F
+
+        top_k    = int(request.form.get("top_k",  CONFIG["default_top_k"]))
+        alpha    = float(request.form.get("alpha", CONFIG["default_alpha"]))
+        src_lang = request.form.get("lang", "auto")
+
+        if "audio" not in request.files:
+            return jsonify({"error": "audio file required"}), 400
+
+        audio_file = request.files["audio"]
+        suffix     = Path(audio_file.filename).suffix if audio_file.filename else ".wav"
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            audio_file.save(tmp.name)
+            tmp_path = tmp.name
+
+        try:
+            asr           = transcribe_audio(tmp_path)
+            transcribed   = asr.get("text", "")
+            detected_lang = asr.get("language", "en") if src_lang == "auto" else src_lang
+
+            qp = get_query_processor()
+            qc = qp.process(transcribed, src_lang=detected_lang)
+
+            mel = load_and_preprocess_audio(tmp_path, n_mels=CONFIG["n_mels"])
+            mel = mel.to(get_device())
+
+            audio_model = get_audio_model()
+            with torch.no_grad():
+                audio_emb = F.normalize(audio_model(mel), dim=-1)
+
+            retriever       = get_retriever()
+            retriever.alpha = alpha
+            raw = retriever.retrieve_from_audio_embedding(audio_emb.cpu(), qc, top_k=top_k)
+
+            return jsonify({
+                "transcription": transcribed,
+                "detected_lang": detected_lang,
+                "normalized":    qc.normalized_text,
+                "objects":       qc.objects,
+                "attributes":    qc.attributes,
+                "relations":     qc.relations,
+                "keywords":      qc.all_keywords,
+                "results":       format_results(raw),
+            })
+        finally:
+            os.unlink(tmp_path)
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+if __name__ == "__main__":
+    host        = os.getenv("HOST", "0.0.0.0")
+    port        = int(os.getenv("PORT", "5000"))
+    public_host = os.getenv("APP_PUBLIC_HOST", "localhost")
+    ssl_context = get_ssl_context()
+    scheme      = "https" if ssl_context else "http"
+
+    print("=" * 60)
+    print("  speak2gallery API server")
+    print("=" * 60)
+    print(f"  Project dir : {PROJECT_DIR}")
+    print(f"  Index       : {CONFIG['image_index_path']}")
+    print(f"  Checkpoint  : {CONFIG['checkpoint_path']}")
+    print(f"  Tag index   : {CONFIG['tag_index_path']}")
+    print(f"  COCO dirs   : {[str(d) for d in COCO_DIRS]}")
+    print(f"  SSL enabled : {'yes' if ssl_context else 'no'}")
+    print("=" * 60)
+    print(f"  Open: {scheme}://{public_host}:{port}")
+    print("=" * 60)
+
+    app.run(host=host, port=port, debug=False, threaded=True, ssl_context=ssl_context)
+
+
+================================================
+FILE: app/README_HTTPS.md
+================================================
+# HTTPS setup for speak2gallery
+
+Your original app already notes that the mic works on `localhost` and that remote access needs SSL. This patch adds direct HTTPS support to Flask plus clearer frontend guidance.
+
+## What changed
+
+- `app.py`
+  - supports `SSL_CERT_FILE` + `SSL_KEY_FILE`
+  - supports `SSL_ADHOC=1` for a self-signed development certificate
+  - adds optional `FORCE_HTTPS=1` redirect support for reverse-proxy deployments
+  - adds `Permissions-Policy` and `Strict-Transport-Security` headers
+  - reports whether the current request is HTTPS in `/api/status`
+- `static/index.html`
+  - warns when the page is opened over insecure HTTP
+  - blocks the mic button unless the context is secure or localhost
+  - shows the expected `https://host:port` URL hint
+
+## Fastest dev setup
+
+Install dependencies:
+
+```bash
+pip install flask flask-cors cryptography --break-system-packages
+```
+
+Run with an auto-generated self-signed certificate:
+
+```bash
+cd /home/other/Niramay/DL/web_app
+SSL_ADHOC=1 APP_PUBLIC_HOST=YOUR_SERVER_IP python app.py
+```
+
+Then open:
+
+```text
+https://YOUR_SERVER_IP:5000
+```
+
+Your browser will likely show a warning because the certificate is self-signed. Accept it once for local testing.
+
+## Using your own certificate
+
+```bash
+cd /home/other/Niramay/DL/web_app
+SSL_CERT_FILE=/path/to/fullchain.pem \
+SSL_KEY_FILE=/path/to/privkey.pem \
+APP_PUBLIC_HOST=your-domain.com \
+python app.py
+```
+
+Open:
+
+```text
+https://your-domain.com:5000
+```
+
+## Production note
+
+For a real deployment, the cleanest setup is usually:
+
+- Flask app behind Nginx or Caddy
+- TLS terminated at the reverse proxy
+- `FORCE_HTTPS=1` enabled in Flask
+
+That gives you proper certificates, automatic renewals, and cleaner ports.
+
+
+
+================================================
+FILE: app/static/index.html
+================================================
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>speak2gallery - Audio × Image Retrieval</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;700;800&family=DM+Mono:ital,wght@0,300;0,400;1,300&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --ink: #141410;
+  --ink2: #3d3d38;
+  --ink3: #8a8a82;
+  --paper: #f3ede0;
+  --paper2: #ebe4d4;
+  --paper3: #dfd7c5;
+  --accent: #c8381a;
+  --accent-dim: rgba(200,56,26,0.12);
+  --card: #faf6ed;
+  --border: rgba(20,20,16,0.11);
+  --border2: rgba(20,20,16,0.2);
+  --success: #2a7a3b;
+  --warn: #b06010;
+}
+
+html, body {
+  height: 100%;
+  font-family: 'Syne', sans-serif;
+  background: var(--paper);
+  color: var(--ink);
+  overflow: hidden;
+}
+
+.shell {
+  display: grid;
+  grid-template-rows: 56px 1fr 44px;
+  height: 100vh;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 2rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--card);
+  position: relative;
+  z-index: 10;
+}
+
+.logo {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.logo-text {
+  font-size: 1.35rem;
+  font-weight: 800;
+  letter-spacing: -0.04em;
+  color: var(--ink);
+}
+
+.logo-text span { color: var(--accent); }
+
+.logo-badge {
+  font-family: 'DM Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink3);
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+}
+
+.status-dot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--ink3);
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ink3);
+}
+
+.dot.ok { background: var(--success); }
+.dot.error { background: var(--accent); }
+.dot.loading { background: var(--warn); animation: blink 1s ease-in-out infinite; }
+
+@keyframes blink { 0%,100% { opacity:1; } 50% { opacity:0.3; } }
+
+.hdr-stat {
+  text-align: right;
+}
+.hdr-stat-val {
+  font-size: 1rem;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.03em;
+}
+.hdr-stat-lbl {
+  font-family: 'DM Mono', monospace;
+  font-size: 8px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--ink3);
+  margin-top: 2px;
+}
+
+main {
+  display: grid;
+  grid-template-columns: 340px 1fr;
+  overflow: hidden;
+}
+
+.side {
+  background: var(--card);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.side-section {
+  padding: 1.25rem 1.5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.sec-label {
+  font-family: 'DM Mono', monospace;
+  font-size: 8.5px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--ink3);
+  margin-bottom: 0.8rem;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sec-label::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.mode-toggle {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border: 1px solid var(--border2);
+  border-radius: 7px;
+  overflow: hidden;
+}
+
+.mode-btn {
+  padding: 0.65rem 0.8rem;
+  background: transparent;
+  border: none;
+  font-family: 'Syne', sans-serif;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--ink2);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: all 0.15s;
+  border-radius: 0;
+}
+
+.mode-btn svg { width: 13px; height: 13px; flex-shrink: 0; }
+.mode-btn:hover { background: var(--paper2); }
+.mode-btn.active { background: var(--ink); color: var(--paper); }
+
+.query-textarea {
+  width: 100%;
+  background: var(--paper);
+  border: 1px solid var(--border2);
+  border-radius: 7px;
+  padding: 0.8rem 1rem;
+  font-family: 'Syne', sans-serif;
+  font-size: 0.88rem;
+  color: var(--ink);
+  resize: none;
+  height: 88px;
+  outline: none;
+  transition: border-color 0.15s;
+  line-height: 1.5;
+}
+
+.query-textarea::placeholder { color: var(--ink3); font-style: italic; }
+.query-textarea:focus { border-color: var(--ink2); }
+
+.mic-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.9rem;
+  padding: 1.2rem;
+  background: var(--paper);
+  border: 1.5px dashed var(--border2);
+  border-radius: 7px;
+}
+
+.secure-note {
+  display: none;
+  margin-top: 0.8rem;
+  padding: 0.75rem 0.85rem;
+  background: rgba(176,96,16,0.1);
+  border: 1px solid rgba(176,96,16,0.22);
+  border-radius: 5px;
+  color: var(--warn);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+.secure-note.show { display: block; }
+
+.mic-ring {
+  position: relative;
+  width: 68px;
+  height: 68px;
+}
+
+.mic-btn-circle {
+  width: 68px;
+  height: 68px;
+  border-radius: 50%;
+  border: 2px solid var(--ink);
+  background: transparent;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+}
+
+.mic-btn-circle:hover { background: var(--paper2); }
+.mic-btn-circle.rec { border-color: var(--accent); background: var(--accent-dim); }
+.mic-btn-circle.rec { animation: mic-pulse 1.4s ease-in-out infinite; }
+.mic-btn-circle.disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+@keyframes mic-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(200,56,26,0.35); }
+  70% { box-shadow: 0 0 0 18px rgba(200,56,26,0); }
+  100% { box-shadow: 0 0 0 0 rgba(200,56,26,0); }
+}
+
+.mic-btn-circle svg { width: 26px; height: 26px; }
+.mic-btn-circle.rec svg { stroke: var(--accent); }
+
+.waveform {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  height: 24px;
+}
+
+.wb {
+  width: 3px;
+  border-radius: 3px;
+  background: var(--accent);
+  height: 4px;
+  transition: height 0.1s;
+}
+
+.recording .wb { animation: wbounce 0.5s ease-in-out infinite alternate; }
+.wb:nth-child(1) { animation-delay: 0s; }
+.wb:nth-child(2) { animation-delay: 0.07s; }
+.wb:nth-child(3) { animation-delay: 0.14s; }
+.wb:nth-child(4) { animation-delay: 0.21s; }
+.wb:nth-child(5) { animation-delay: 0.14s; }
+.wb:nth-child(6) { animation-delay: 0.07s; }
+.wb:nth-child(7) { animation-delay: 0s; }
+
+@keyframes wbounce { to { height: 20px; } }
+
+.mic-label {
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--ink3);
+  text-align: center;
+}
+
+.mic-label.rec { color: var(--accent); }
+
+.timer-display {
+  font-family: 'DM Mono', monospace;
+  font-size: 1.4rem;
+  font-weight: 300;
+  color: var(--accent);
+  letter-spacing: 0.06em;
+  display: none;
+}
+
+.trans-box {
+  margin-top: 0.7rem;
+  padding: 0.6rem 0.85rem;
+  background: var(--accent-dim);
+  border: 1px solid rgba(200,56,26,0.22);
+  border-radius: 5px;
+  display: none;
+}
+
+.trans-box.show { display: block; }
+
+.trans-lbl {
+  font-family: 'DM Mono', monospace;
+  font-size: 8px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 3px;
+}
+
+.trans-text {
+  font-size: 0.8rem;
+  color: var(--ink);
+  font-style: italic;
+  line-height: 1.5;
+}
+
+.params-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.param-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.param-name {
+  font-size: 0.78rem;
+  color: var(--ink2);
+  font-weight: 500;
+  flex: 1;
+}
+
+.param-ctrl {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.param-val {
+  font-family: 'DM Mono', monospace;
+  font-size: 11px;
+  color: var(--accent);
+  min-width: 28px;
+  text-align: right;
+}
+
+input[type="range"] {
+  -webkit-appearance: none;
+  width: 90px;
+  height: 2px;
+  background: var(--border2);
+  border-radius: 2px;
+  outline: none;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--ink);
+  cursor: pointer;
+}
+
+select.ctrl-select {
+  padding: 3px 7px;
+  background: var(--paper);
+  border: 1px solid var(--border2);
+  border-radius: 4px;
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  color: var(--ink);
+  cursor: pointer;
+  outline: none;
+}
+
+.qc-box {
+  padding: 0.75rem 1rem;
+  background: var(--paper);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  display: none;
+}
+
+.qc-box.show { display: block; }
+
+.qc-normalized {
+  font-size: 0.82rem;
+  color: var(--ink);
+  line-height: 1.5;
+  margin-bottom: 0.5rem;
+}
+
+.qc-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+
+.qc-tag {
+  font-family: 'DM Mono', monospace;
+  font-size: 9px;
+  padding: 2px 7px;
+  border-radius: 20px;
+  letter-spacing: 0.04em;
+}
+
+.qc-tag.obj { background: var(--accent-dim); color: var(--accent); }
+.qc-tag.attr { background: rgba(20,20,16,0.07); color: var(--ink2); }
+.qc-tag.rel { background: rgba(176,96,16,0.1); color: var(--warn); }
+
+.search-btn {
+  width: calc(100% - 3rem);
+  margin: 1rem 1.5rem 1.2rem;
+  padding: 0.85rem 1.5rem;
+  background: var(--ink);
+  color: var(--paper);
+  border: none;
+  border-radius: 7px;
+  font-family: 'Syne', sans-serif;
+  font-size: 0.88rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+
+.search-btn:hover { background: var(--ink2); transform: translateY(-1px); }
+.search-btn:active { transform: none; }
+.search-btn:disabled {
+  background: var(--ink3);
+  cursor: not-allowed;
+  transform: none;
+}
+
+.btn-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255,255,255,0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  display: none;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.btn-arrow { transition: transform 0.2s; }
+.search-btn:hover .btn-arrow { transform: translateX(3px); }
+
+.gallery {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--paper);
+}
+
+.gallery-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.85rem 1.5rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--card);
+  flex-shrink: 0;
+}
+
+.result-meta {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.result-count {
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--ink3);
+}
+
+.elapsed {
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  color: var(--ink3);
+}
+
+.sort-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sort-lbl {
+  font-family: 'DM Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink3);
+  margin-right: 4px;
+}
+
+.sort-btn {
+  padding: 3px 9px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: 'DM Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  color: var(--ink3);
+  cursor: pointer;
+  transition: all 0.12s;
+}
+
+.sort-btn:hover, .sort-btn.active {
+  background: var(--ink);
+  color: var(--paper);
+  border-color: var(--ink);
+}
+
+.gallery-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1.5rem;
+}
+
+.empty {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  color: var(--ink3);
+  text-align: center;
+  padding: 2rem;
+}
+
+.empty-glyph {
+  font-size: 3.5rem;
+  opacity: 0.15;
+  line-height: 1;
+}
+
+.empty-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--ink2);
+}
+
+.empty-sub {
+  font-family: 'DM Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  line-height: 1.7;
+  max-width: 320px;
+  color: var(--ink3);
+}
+
+.example-set {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: center;
+  margin-top: 0.5rem;
+}
+
+.ex-pill {
+  padding: 4px 12px;
+  background: var(--paper2);
+  border: 1px solid var(--border2);
+  border-radius: 20px;
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  color: var(--ink2);
+  cursor: pointer;
+  transition: all 0.13s;
+  letter-spacing: 0.02em;
+}
+
+.ex-pill:hover {
+  background: var(--ink);
+  color: var(--paper);
+  border-color: var(--ink);
+}
+
+.error-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  padding: 3rem;
+  color: var(--accent);
+  text-align: center;
+}
+
+.error-state .err-icon { font-size: 2rem; opacity: 0.5; }
+.error-state .err-msg { font-size: 0.85rem; color: var(--ink2); max-width: 340px; line-height: 1.6; }
+.error-state .err-detail { font-family: 'DM Mono', monospace; font-size: 10px; color: var(--ink3); }
+
+.skeleton-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+
+.skel-card {
+  aspect-ratio: 4/3;
+  border-radius: 8px;
+  background: var(--paper2);
+  position: relative;
+  overflow: hidden;
+}
+
+.skel-card::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg,
+    transparent 0%,
+    rgba(255,255,255,0.5) 50%,
+    transparent 100%);
+  background-size: 200% 100%;
+  animation: shimmer 1.3s ease-in-out infinite;
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.img-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+
+.img-card {
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--paper2);
+  border: 1px solid var(--border);
+  position: relative;
+  cursor: pointer;
+  aspect-ratio: 4/3;
+  transition: all 0.2s;
+}
+
+.img-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 10px 30px rgba(0,0,0,0.15);
+  border-color: var(--ink2);
+  z-index: 2;
+}
+
+.img-card img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  transition: transform 0.3s;
+}
+
+.img-card:hover img { transform: scale(1.03); }
+
+.img-card .rank-badge {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  width: 22px;
+  height: 22px;
+  background: rgba(20,20,16,0.8);
+  color: var(--paper);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  backdrop-filter: blur(4px);
+}
+
+.img-card .score-badge {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  padding: 2px 7px;
+  background: rgba(200,56,26,0.85);
+  color: #fff;
+  border-radius: 4px;
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  backdrop-filter: blur(4px);
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.img-card:hover .score-badge { opacity: 1; }
+
+.img-card .img-hover-info {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 0.75rem 0.9rem 0.6rem;
+  background: linear-gradient(to top, rgba(0,0,0,0.72) 0%, transparent 100%);
+  opacity: 0;
+  transition: opacity 0.2s;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.img-card:hover .img-hover-info { opacity: 1; }
+
+.hover-filename {
+  font-family: 'DM Mono', monospace;
+  font-size: 9px;
+  color: rgba(255,255,255,0.6);
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hover-scores {
+  display: flex;
+  gap: 8px;
+}
+
+.hover-score {
+  font-family: 'DM Mono', monospace;
+  font-size: 9px;
+  color: rgba(255,255,255,0.85);
+}
+
+.hover-score span { color: rgba(255,255,255,0.5); font-size: 8px; }
+
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.img-card {
+  animation: fadeUp 0.35s ease both;
+}
+
+.modal-bg {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(10,10,8,0.82);
+  z-index: 200;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(6px);
+  animation: fadeIn 0.15s ease;
+}
+
+.modal-bg.open { display: flex; }
+
+@keyframes fadeIn { from { opacity: 0; } }
+
+.modal {
+  background: var(--card);
+  border-radius: 12px;
+  padding: 0;
+  width: min(700px, 92vw);
+  max-height: 90vh;
+  overflow-y: auto;
+  position: relative;
+  border: 1px solid var(--border2);
+  animation: modalIn 0.2s ease;
+}
+
+@keyframes modalIn {
+  from { opacity: 0; transform: scale(0.97) translateY(6px); }
+}
+
+.modal-img-wrap {
+  position: relative;
+  aspect-ratio: 16/10;
+  background: var(--paper2);
+  overflow: hidden;
+  border-radius: 12px 12px 0 0;
+}
+
+.modal-img-wrap img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.modal-close-btn {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 30px;
+  height: 30px;
+  background: rgba(20,20,16,0.65);
+  border: none;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: #fff;
+  font-size: 14px;
+  backdrop-filter: blur(4px);
+  transition: background 0.15s;
+}
+
+.modal-close-btn:hover { background: rgba(20,20,16,0.9); }
+
+.modal-body {
+  padding: 1.25rem 1.5rem 1.5rem;
+}
+
+.modal-rank-line {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.modal-rank {
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: var(--ink3);
+  text-transform: uppercase;
+}
+
+.modal-fname {
+  font-family: 'DM Mono', monospace;
+  font-size: 11px;
+  color: var(--ink2);
+}
+
+.modal-scores {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 1.1rem;
+}
+
+.score-card {
+  padding: 0.65rem 0.85rem;
+  background: var(--paper);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.score-card-lbl {
+  font-family: 'DM Mono', monospace;
+  font-size: 8px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink3);
+}
+
+.score-card-val {
+  font-family: 'DM Mono', monospace;
+  font-size: 1.1rem;
+  font-weight: 400;
+  color: var(--ink);
+  margin-top: 3px;
+  letter-spacing: -0.01em;
+}
+
+.score-card-val.accent { color: var(--accent); }
+
+.score-bar-section { display: flex; flex-direction: column; gap: 8px; }
+
+.sbi-header {
+  display: flex;
+  justify-content: space-between;
+  font-family: 'DM Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  color: var(--ink3);
+  margin-bottom: 4px;
+}
+
+.sbi-track {
+  height: 3px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.sbi-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.55s ease;
+  width: 0%;
+}
+
+.sbi-fill.sem { background: var(--accent); }
+.sbi-fill.tag { background: var(--ink2); }
+.sbi-fill.fin { background: var(--ink); }
+
+footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 2rem;
+  border-top: 1px solid var(--border);
+  background: var(--card);
+  font-family: 'DM Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  color: var(--ink3);
+  flex-shrink: 0;
+}
+
+.pipeline-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.p-node {
+  padding: 2px 7px;
+  background: var(--paper2);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  font-size: 8px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.p-arr { color: var(--border2); font-size: 10px; }
+
+::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--ink3); }
+
+@media (max-width: 800px) {
+  main { grid-template-columns: 1fr; }
+  .side { max-height: 50vh; }
+}
+</style>
+</head>
+<body>
+
+<div class="shell">
+  <header>
+    <div class="logo">
+      <div class="logo-text">speak<span>2</span>gallery</div>
+      <div class="logo-badge">Audio × Image Retrieval</div>
+    </div>
+    <div class="header-right">
+      <div class="status-dot">
+        <div class="dot loading" id="status-dot"></div>
+        <span id="status-text">Connecting...</span>
+      </div>
+      <div class="hdr-stat">
+        <div class="hdr-stat-val" id="stat-encoder">Whisper</div>
+        <div class="hdr-stat-lbl">Encoder</div>
+      </div>
+      <div class="hdr-stat">
+        <div class="hdr-stat-val" id="stat-device">-</div>
+        <div class="hdr-stat-lbl">Device</div>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <aside class="side">
+      <div class="side-section">
+        <div class="sec-label">Input Mode</div>
+        <div class="mode-toggle">
+          <button class="mode-btn active" id="btn-text" onclick="setMode('text')">
+            <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5">
+              <rect x="1" y="1" width="12" height="12" rx="2"/>
+              <line x1="4" y1="5" x2="10" y2="5"/>
+              <line x1="4" y1="8" x2="8" y2="8"/>
+            </svg>
+            Text Query
+          </button>
+          <button class="mode-btn" id="btn-speech" onclick="setMode('speech')">
+            <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5">
+              <rect x="4" y="1" width="6" height="8" rx="3"/>
+              <path d="M2 7c0 2.8 2.2 5 5 5s5-2.2 5-5"/>
+              <line x1="7" y1="12" x2="7" y2="14"/>
+            </svg>
+            Speech
+          </button>
+        </div>
+      </div>
+
+      <div class="side-section" id="text-area">
+        <div class="sec-label">Query</div>
+        <textarea class="query-textarea" id="query-input"
+          placeholder="a dog on a surfboard... woman wearing red hat... crowded city street at night..."></textarea>
+      </div>
+
+      <div class="side-section" id="speech-area" style="display:none;">
+        <div class="sec-label">Voice Input</div>
+        <div class="mic-wrap" id="mic-wrap">
+          <div class="mic-ring">
+            <button class="mic-btn-circle" id="mic-btn" onclick="toggleRecord()">
+              <svg viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="1.8" id="mic-svg">
+                <rect x="9" y="2" width="10" height="15" rx="5"/>
+                <path d="M5 13c0 5 4 9 9 9s9-4 9-9"/>
+                <line x1="14" y1="22" x2="14" y2="26"/>
+              </svg>
+            </button>
+          </div>
+          <div class="waveform" id="waveform">
+            <div class="wb"></div><div class="wb"></div><div class="wb"></div>
+            <div class="wb"></div><div class="wb"></div><div class="wb"></div>
+            <div class="wb"></div>
+          </div>
+          <div class="timer-display" id="timer-display">5.0s</div>
+          <div class="mic-label" id="mic-label">Click mic to start recording</div>
+        </div>
+        <div class="secure-note" id="secure-note"></div>
+        <div class="trans-box" id="trans-box">
+          <div class="trans-lbl">Whisper Transcription</div>
+          <div class="trans-text" id="trans-text"></div>
+        </div>
+      </div>
+
+      <div class="side-section">
+        <div class="sec-label">Parameters</div>
+        <div class="params-grid">
+          <div class="param-row">
+            <span class="param-name">Top-K results</span>
+            <div class="param-ctrl">
+              <input type="range" min="3" max="9" step="3" value="9" id="topk"
+                oninput="document.getElementById('topk-val').textContent=this.value">
+              <span class="param-val" id="topk-val">9</span>
+            </div>
+          </div>
+          <div class="param-row">
+            <span class="param-name">Semantic weight α</span>
+            <div class="param-ctrl">
+              <input type="range" min="0" max="10" value="7" id="alpha"
+                oninput="document.getElementById('alpha-val').textContent=(this.value/10).toFixed(1)">
+              <span class="param-val" id="alpha-val">0.7</span>
+            </div>
+          </div>
+          <div class="param-row">
+            <span class="param-name">Language</span>
+            <select class="ctrl-select" id="lang-select">
+              <option value="auto">auto-detect</option>
+              <option value="en">English</option>
+              <option value="hi">Hindi</option>
+              <option value="bn">Bengali</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="side-section">
+        <div class="sec-label">Query Components</div>
+        <div class="qc-box" id="qc-box">
+          <div class="qc-normalized" id="qc-normalized"></div>
+          <div class="qc-tags" id="qc-tags"></div>
+        </div>
+        <div style="font-family:'DM Mono',monospace;font-size:10px;color:var(--ink3);padding-top:0.2rem;" id="qc-empty-note">
+          Results will show detected objects, attributes &amp; relations.
+        </div>
+      </div>
+
+      <div style="flex:1;"></div>
+
+      <button class="search-btn" id="search-btn" onclick="doSearch()">
+        <div class="btn-spinner" id="btn-spinner"></div>
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.8" id="btn-icon">
+          <circle cx="6" cy="6" r="4.2"/>
+          <line x1="9.2" y1="9.2" x2="13" y2="13"/>
+        </svg>
+        <span id="btn-text-span">Retrieve Images</span>
+        <svg class="btn-arrow" width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" stroke-width="1.8">
+          <line x1="2" y1="6.5" x2="11" y2="6.5"/>
+          <polyline points="7.5,3 11,6.5 7.5,10"/>
+        </svg>
+      </button>
+
+    </aside>
+
+    <div class="gallery">
+      <div class="gallery-top">
+        <div class="result-meta">
+          <div class="result-count" id="result-count">No results yet</div>
+          <div class="elapsed" id="elapsed-time"></div>
+        </div>
+        <div class="sort-row">
+          <span class="sort-lbl">Sort</span>
+          <button class="sort-btn active" onclick="sortResults('final')">Final</button>
+          <button class="sort-btn" onclick="sortResults('semantic')">Semantic</button>
+          <button class="sort-btn" onclick="sortResults('tag')">Tag</button>
+        </div>
+      </div>
+
+      <div class="gallery-scroll" id="gallery-scroll">
+        <div class="empty" id="empty-state">
+          <div class="empty-glyph">◎</div>
+          <div class="empty-title">Awaiting query</div>
+          <div class="empty-sub">
+            Speak or type a description. The system will retrieve matching COCO images
+            using hybrid semantic + tag-based retrieval.
+          </div>
+          <div class="example-set">
+            <button class="ex-pill" onclick="tryEx('a dog running on the beach')">dog on beach</button>
+            <button class="ex-pill" onclick="tryEx('woman wearing a red hat')">woman in hat</button>
+            <button class="ex-pill" onclick="tryEx('man playing tennis')">man with tennis racket</button>
+            <button class="ex-pill" onclick="tryEx('crowded city street at night')">city street</button>
+            <button class="ex-pill" onclick="tryEx('elephant walking in grass')">elephant</button>
+            <button class="ex-pill" onclick="tryEx('pizza on a wooden table')">pizza on table</button>
+            <button class="ex-pill" onclick="tryEx('children playing soccer in a field')">kids playing soccer</button>
+            <button class="ex-pill" onclick="tryEx('cat sitting on a couch')">cat on couch</button>
+          </div>
+        </div>
+
+        <div id="loading-state" style="display:none;">
+          <div class="skeleton-grid">
+            <div class="skel-card"></div><div class="skel-card"></div><div class="skel-card"></div>
+            <div class="skel-card"></div><div class="skel-card"></div><div class="skel-card"></div>
+            <div class="skel-card"></div><div class="skel-card"></div><div class="skel-card"></div>
+          </div>
+        </div>
+
+        <div id="error-state" style="display:none;" class="error-state">
+          <div class="err-icon">⚠</div>
+          <div class="err-msg" id="error-msg"></div>
+          <div class="err-detail" id="error-detail"></div>
+        </div>
+
+        <div id="results-state" style="display:none;">
+          <div class="img-grid" id="img-grid"></div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <footer>
+    <span>speak2gallery · COCO × CLIP × Whisper-small · audio_encoder_multilingual.pt</span>
+    <div class="pipeline-row">
+      <div class="p-node">Audio / Text</div><div class="p-arr">→</div>
+      <div class="p-node">ASR / NLP</div><div class="p-arr">→</div>
+      <div class="p-node">Normalize</div><div class="p-arr">→</div>
+      <div class="p-node">Extract</div><div class="p-arr">→</div>
+      <div class="p-node">Hybrid Retrieve</div><div class="p-arr">→</div>
+      <div class="p-node">Display</div>
+    </div>
+  </footer>
+</div>
+
+<div class="modal-bg" id="modal-bg" onclick="closeModal(event)">
+  <div class="modal" id="modal" onclick="event.stopPropagation()">
+    <div class="modal-img-wrap">
+      <img id="modal-img" src="" alt="Retrieved image">
+      <button class="modal-close-btn" onclick="forceCloseModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="modal-rank-line">
+        <span class="modal-rank" id="modal-rank-text"></span>
+        <span class="modal-fname" id="modal-fname"></span>
+      </div>
+      <div class="modal-scores" id="modal-scores"></div>
+      <div class="score-bar-section">
+        <div class="score-bar-item">
+          <div class="sbi-header"><span>Semantic (CLIP)</span><span id="sem-val"></span></div>
+          <div class="sbi-track"><div class="sbi-fill sem" id="sem-fill"></div></div>
+        </div>
+        <div class="score-bar-item">
+          <div class="sbi-header"><span>Tag overlap</span><span id="tag-val"></span></div>
+          <div class="sbi-track"><div class="sbi-fill tag" id="tag-fill"></div></div>
+        </div>
+        <div class="score-bar-item">
+          <div class="sbi-header"><span>Final (fused)</span><span id="fin-val"></span></div>
+          <div class="sbi-track"><div class="sbi-fill fin" id="fin-fill"></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+let currentMode = 'text';
+let isRecording = false;
+let mediaRecorder = null;
+let audioChunks = [];
+let recordTimer = null;
+let timerInterval = null;
+let allResults = [];
+let currentSort = 'final';
+const API = '';
+
+function isLocalhost() {
+  return ['localhost', '127.0.0.1'].includes(window.location.hostname);
+}
+
+function isSecureEnoughForMic() {
+  return window.isSecureContext || isLocalhost();
+}
+
+function secureUrlHint() {
+  const host = window.location.hostname || 'YOUR_HOST';
+  const port = window.location.port || '5000';
+  return `https://${host}:${port}`;
+}
+
+function showSecureNote(message) {
+  const el = document.getElementById('secure-note');
+  el.textContent = message;
+  el.classList.add('show');
+}
+
+function refreshMicAvailability() {
+  const micBtn = document.getElementById('mic-btn');
+  const speechBtn = document.getElementById('btn-speech');
+
+  if (isSecureEnoughForMic()) {
+    micBtn.classList.remove('disabled');
+    speechBtn.disabled = false;
+    document.getElementById('secure-note').classList.remove('show');
+    return;
+  }
+
+  micBtn.classList.add('disabled');
+  showSecureNote(`Microphone access needs HTTPS. Open this app at ${secureUrlHint()} after starting Flask with SSL.`);
+}
+
+async function checkStatus() {
+  try {
+    const r = await fetch(`${API}/api/status`);
+    const d = await r.json();
+    document.getElementById('status-dot').className = 'dot ok';
+    document.getElementById('status-text').textContent =
+      d.cuda ? 'GPU ready' : 'CPU ready';
+    document.getElementById('stat-device').textContent =
+      d.cuda ? 'CUDA' : 'CPU';
+
+    if (d.https) {
+      document.getElementById('status-text').textContent += ' · HTTPS';
+    }
+
+    if (!d.index_exists) {
+      setStatus('warn', 'image_index.pt not found');
+    }
+    if (!d.checkpoint_exists) {
+      setStatus('error', 'checkpoint not found');
+    }
+  } catch(e) {
+    document.getElementById('status-dot').className = 'dot error';
+    document.getElementById('status-text').textContent = 'Server offline';
+  } finally {
+    refreshMicAvailability();
+  }
+}
+
+function setStatus(type, msg) {
+  document.getElementById('status-dot').className = `dot ${type}`;
+  document.getElementById('status-text').textContent = msg;
+}
+
+checkStatus();
+
+function setMode(mode) {
+  currentMode = mode;
+  document.getElementById('btn-text').classList.toggle('active', mode === 'text');
+  document.getElementById('btn-speech').classList.toggle('active', mode === 'speech');
+  document.getElementById('text-area').style.display = mode === 'text' ? 'block' : 'none';
+  document.getElementById('speech-area').style.display = mode === 'speech' ? 'block' : 'none';
+  if (mode === 'speech') {
+    document.getElementById('trans-box').classList.remove('show');
+    refreshMicAvailability();
+  }
+}
+
+async function toggleRecord() {
+  if (!isRecording) {
+    await startRecord();
+  } else {
+    stopRecord();
+  }
+}
+
+async function startRecord() {
+  if (!isSecureEnoughForMic()) {
+    const msg = `Microphone access needs HTTPS. Restart the server with SSL and open ${secureUrlHint()}.`;
+    showSecureNote(msg);
+    alert(msg);
+    return;
+  }
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    audioChunks = [];
+    mediaRecorder = new MediaRecorder(stream);
+    mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
+    mediaRecorder.onstop = handleAudioStop;
+    mediaRecorder.start();
+    isRecording = true;
+
+    document.getElementById('mic-btn').classList.add('rec');
+    document.getElementById('mic-label').classList.add('rec');
+    document.getElementById('mic-label').textContent = 'Recording...';
+    document.getElementById('waveform').classList.add('recording');
+    document.getElementById('timer-display').style.display = 'block';
+
+    let t = 5.0;
+    document.getElementById('timer-display').textContent = t.toFixed(1) + 's';
+    timerInterval = setInterval(() => {
+      t -= 0.1;
+      if (t <= 0) t = 0;
+      document.getElementById('timer-display').textContent = t.toFixed(1) + 's';
+    }, 100);
+
+    recordTimer = setTimeout(() => stopRecord(), 5000);
+  } catch(e) {
+    alert('Microphone access denied or unavailable.\n\nError: ' + e.message);
+  }
+}
+
+function stopRecord() {
+  if (!isRecording) return;
+  clearTimeout(recordTimer);
+  clearInterval(timerInterval);
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+    mediaRecorder.stop();
+    mediaRecorder.stream.getTracks().forEach(t => t.stop());
+  }
+  isRecording = false;
+
+  document.getElementById('mic-btn').classList.remove('rec');
+  document.getElementById('mic-label').classList.remove('rec');
+  document.getElementById('mic-label').textContent = 'Processing audio...';
+  document.getElementById('waveform').classList.remove('recording');
+}
+
+async function handleAudioStop() {
+  const blob = new Blob(audioChunks, { type: 'audio/webm' });
+  document.getElementById('mic-label').textContent = 'Transcribing with Whisper...';
+  document.getElementById('timer-display').style.display = 'none';
+  await doAudioSearch(blob);
+  document.getElementById('mic-label').textContent = 'Click mic to start recording';
+}
+
+function tryEx(q) {
+  setMode('text');
+  document.getElementById('query-input').value = q;
+  doSearch();
+}
+
+async function doSearch() {
+  if (currentMode === 'text') {
+    await doTextSearch();
+  } else {
+    document.getElementById('mic-label').textContent = 'Click mic to start recording';
+    document.getElementById('trans-box').classList.remove('show');
+    await startRecord();
+  }
+}
+
+async function doTextSearch() {
+  const query = document.getElementById('query-input').value.trim();
+  if (!query) return;
+
+  const topK = parseInt(document.getElementById('topk').value);
+  const alpha = parseFloat(document.getElementById('alpha-val').textContent);
+  const lang = document.getElementById('lang-select').value;
+
+  setBtnLoading(true);
+  showState('loading');
+  const t0 = Date.now();
+
+  try {
+    const resp = await fetch(`${API}/api/search/text`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, top_k: topK, alpha, lang }),
+    });
+
+    const data = await resp.json();
+    const elapsed = ((Date.now() - t0) / 1000).toFixed(2);
+
+    if (!resp.ok || data.error) {
+      showError(data.error || 'Unknown error', `HTTP ${resp.status}`);
+      return;
+    }
+
+    showQueryComponents(data);
+    allResults = data.results;
+    currentSort = 'final';
+    renderResults(allResults, data.query, elapsed);
+
+  } catch(e) {
+    showError('Failed to connect to server.', 'Is app.py running on the expected port?');
+  } finally {
+    setBtnLoading(false);
+  }
+}
+
+async function doAudioSearch(blob) {
+  const topK = parseInt(document.getElementById('topk').value);
+  const alpha = parseFloat(document.getElementById('alpha-val').textContent);
+  const lang = document.getElementById('lang-select').value;
+
+  setBtnLoading(true);
+  showState('loading');
+  const t0 = Date.now();
+
+  try {
+    const form = new FormData();
+    form.append('audio', blob, 'recording.webm');
+    form.append('top_k', topK);
+    form.append('alpha', alpha);
+    form.append('lang', lang);
+
+    const resp = await fetch(`${API}/api/search/audio`, {
+      method: 'POST',
+      body: form,
+    });
+
+    const data = await resp.json();
+    const elapsed = ((Date.now() - t0) / 1000).toFixed(2);
+
+    if (!resp.ok || data.error) {
+      showError(data.error || 'Unknown error', `HTTP ${resp.status}`);
+      return;
+    }
+
+    if (data.transcription) {
+      document.getElementById('trans-text').textContent = `"${data.transcription}"`;
+      document.getElementById('trans-box').classList.add('show');
+      document.getElementById('query-input').value = data.transcription;
+    }
+
+    showQueryComponents(data);
+    allResults = data.results;
+    currentSort = 'final';
+    renderResults(allResults, data.transcription || '(audio)', elapsed);
+
+  } catch(e) {
+    showError('Failed to connect to server.', 'Is app.py running on the expected port?');
+  } finally {
+    setBtnLoading(false);
+  }
+}
+
+function showQueryComponents(data) {
+  const box = document.getElementById('qc-box');
+  document.getElementById('qc-empty-note').style.display = 'none';
+
+  document.getElementById('qc-normalized').textContent = data.normalized || data.query || '';
+
+  const tagsEl = document.getElementById('qc-tags');
+  tagsEl.innerHTML = '';
+  (data.objects || []).slice(0, 5).forEach(o =>
+    tagsEl.insertAdjacentHTML('beforeend', `<span class="qc-tag obj">${o}</span>`));
+  (data.attributes || []).slice(0, 4).forEach(a =>
+    tagsEl.insertAdjacentHTML('beforeend', `<span class="qc-tag attr">${a}</span>`));
+  (data.relations || []).slice(0, 3).forEach(r =>
+    tagsEl.insertAdjacentHTML('beforeend', `<span class="qc-tag rel">${r}</span>`));
+
+  box.classList.add('show');
+}
+
+function renderResults(results, query, elapsed) {
+  showState('results');
+  document.getElementById('result-count').textContent = `${results.length} images retrieved`;
+  document.getElementById('elapsed-time').textContent = elapsed ? `${elapsed}s` : '';
+
+  const grid = document.getElementById('img-grid');
+  grid.innerHTML = '';
+
+  results.forEach((r, i) => {
+    const card = document.createElement('div');
+    card.className = 'img-card';
+    card.style.animationDelay = `${i * 55}ms`;
+    card.innerHTML = `
+      <img src="${API}/image/${r.image_token}"
+           alt="Rank ${r.rank}"
+           loading="lazy"
+           onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+      <div style="display:none;position:absolute;inset:0;align-items:center;justify-content:center;background:var(--paper2);flex-direction:column;gap:4px;">
+        <span style="font-size:1.5rem;opacity:0.2">◻</span>
+        <span style="font-family:'DM Mono',monospace;font-size:9px;color:var(--ink3);">${r.image_filename}</span>
+      </div>
+      <div class="rank-badge">${r.rank}</div>
+      <div class="score-badge">${r.final_score.toFixed(3)}</div>
+      <div class="img-hover-info">
+        <div class="hover-filename">${r.image_filename}</div>
+        <div class="hover-scores">
+          <div class="hover-score"><span>sem</span> ${r.semantic_score.toFixed(4)}</div>
+          <div class="hover-score"><span>tag</span> ${r.tag_score.toFixed(4)}</div>
+          <div class="hover-score"><span>fin</span> ${r.final_score.toFixed(4)}</div>
+        </div>
+      </div>
+    `;
+    card.onclick = () => openModal(r);
+    grid.appendChild(card);
+  });
+}
+
+function sortResults(field) {
+  currentSort = field;
+  document.querySelectorAll('.sort-btn').forEach(b => {
+    b.classList.toggle('active',
+      b.textContent.trim().toLowerCase() === field ||
+      (field === 'final' && b.textContent.trim() === 'Final') ||
+      (field === 'semantic' && b.textContent.trim() === 'Semantic') ||
+      (field === 'tag' && b.textContent.trim() === 'Tag')
+    );
+  });
+
+  const sorted = [...allResults].sort((a, b) => {
+    if (field === 'semantic') return b.semantic_score - a.semantic_score;
+    if (field === 'tag') return b.tag_score - a.tag_score;
+    return b.final_score - a.final_score;
+  });
+
+  renderResults(sorted, '', '');
+}
+
+function openModal(r) {
+  document.getElementById('modal-img').src = `${API}/image/${r.image_token}`;
+  document.getElementById('modal-rank-text').textContent = `Rank #${r.rank}`;
+  document.getElementById('modal-fname').textContent = r.image_filename;
+
+  document.getElementById('modal-scores').innerHTML = `
+    <div class="score-card">
+      <div class="score-card-lbl">Final Score</div>
+      <div class="score-card-val accent">${r.final_score.toFixed(6)}</div>
+    </div>
+    <div class="score-card">
+      <div class="score-card-lbl">Semantic</div>
+      <div class="score-card-val">${r.semantic_score.toFixed(6)}</div>
+    </div>
+    <div class="score-card">
+      <div class="score-card-lbl">Tag Overlap</div>
+      <div class="score-card-val">${r.tag_score.toFixed(6)}</div>
+    </div>
+  `;
+
+  document.getElementById('sem-val').textContent = (r.semantic_score * 100).toFixed(1) + '%';
+  document.getElementById('tag-val').textContent = (r.tag_score * 100).toFixed(1) + '%';
+  document.getElementById('fin-val').textContent = (r.final_score * 100).toFixed(1) + '%';
+
+  document.getElementById('sem-fill').style.width = '0%';
+  document.getElementById('tag-fill').style.width = '0%';
+  document.getElementById('fin-fill').style.width = '0%';
+
+  document.getElementById('modal-bg').classList.add('open');
+
+  setTimeout(() => {
+    document.getElementById('sem-fill').style.width = (r.semantic_score * 100) + '%';
+    document.getElementById('tag-fill').style.width = (r.tag_score * 100) + '%';
+    document.getElementById('fin-fill').style.width = (r.final_score * 100) + '%';
+  }, 80);
+}
+
+function closeModal(e) {
+  if (e.target === document.getElementById('modal-bg')) {
+    forceCloseModal();
+  }
+}
+
+function forceCloseModal() {
+  document.getElementById('modal-bg').classList.remove('open');
+  document.getElementById('sem-fill').style.width = '0%';
+  document.getElementById('tag-fill').style.width = '0%';
+  document.getElementById('fin-fill').style.width = '0%';
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') forceCloseModal();
+});
+
+function showState(state) {
+  document.getElementById('empty-state').style.display = state === 'empty' ? 'flex' : 'none';
+  document.getElementById('loading-state').style.display = state === 'loading' ? 'block' : 'none';
+  document.getElementById('error-state').style.display = state === 'error' ? 'flex' : 'none';
+  document.getElementById('results-state').style.display = state === 'results' ? 'block' : 'none';
+}
+
+function showError(msg, detail) {
+  showState('error');
+  document.getElementById('error-msg').textContent = msg;
+  document.getElementById('error-detail').textContent = detail || '';
+  document.getElementById('result-count').textContent = 'Error';
+}
+
+function setBtnLoading(loading) {
+  const btn = document.getElementById('search-btn');
+  const spinner = document.getElementById('btn-spinner');
+  const icon = document.getElementById('btn-icon');
+  const txt = document.getElementById('btn-text-span');
+  btn.disabled = loading;
+  spinner.style.display = loading ? 'block' : 'none';
+  icon.style.display = loading ? 'none' : 'block';
+  txt.textContent = loading ? 'Retrieving...' : 'Retrieve Images';
+}
+
+document.getElementById('query-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    doSearch();
+  }
+});
+</script>
+
+</body>
+</html>
+
+
+
+================================================
+FILE: data/make_coco_tts_manifest.py
+================================================
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+Create a COCO-TTS JSONL manifest:
+
+Each line:
+{"image_path": ".../000000123.jpg", "caption": "...", "audio_path": ".../tts/123_<hash>.wav"}
+
+Inputs:
+- coco_images_dir: COCO train2017/val2017 folder containing images
+- coco_captions_json: COCO captions annotations json (captions_train2017.json etc.)
+- out_audio_dir: where audio wavs are (or will be generated)
+- out_manifest_jsonl: output jsonl file path
+
+Optional:
+- --tts_cmd: template command to generate audio. Must contain {text} and {out_wav}
+  Example (Piper):
+    --tts_cmd 'echo "{text}" | piper --model en_US-lessac-medium --output_file "{out_wav}"'
+
+If --tts_cmd is omitted, the script will ONLY write the manifest and will not generate audio.
+
+python /home/other/Niramay/DL/make_coco_tts_manifest.py \
+  --coco_images_dir /home/other/coco_dataset/train2017 \
+  --coco_captions_json /home/other/coco_dataset/annotations/captions_train2017.json \
+  --out_audio_dir /home/other/Niramay/DL/tts_wavs \
+  --out_manifest_jsonl /home/other/Niramay/DL/coco_train_tts.jsonl \
+  --limit 5000 \
+  --tts_cmd 'edge-tts --text "{text}" --write-media "{out_wav}"' \
+  --skip_missing_images
+  
+python scripts/make_coco_tts_manifest.py \
+  --coco_images_dir /path/to/coco/train2017 \
+  --coco_captions_json /path/to/annotations/captions_train2017.json \
+  --out_audio_dir /path/to/tts_wavs \
+  --out_manifest_jsonl data/manifests/coco_train_tts.jsonl \
+  --limit 5000 \
+  --tts_cmd 'echo "{text}" | piper --model en_US-lessac-medium --output_file "{out_wav}"' \
+  --skip_missing_images
+"""
+
+import argparse
+import hashlib
+import json
+import os
+import subprocess
+from pathlib import Path
+
+
+def short_hash(text: str, n: int = 10) -> str:
+    return hashlib.md5(text.encode("utf-8")).hexdigest()[:n]
+
+
+def load_coco(coco_captions_json: str):
+    with open(coco_captions_json, "r", encoding="utf-8") as f:
+        coco = json.load(f)
+
+    # image_id -> file_name
+    img_map = {img["id"]: img["file_name"] for img in coco["images"]}
+    anns = coco["annotations"]
+    return img_map, anns
+
+
+def render_tts_cmd(template: str, text: str, out_wav: str) -> str:
+    # Escape quotes minimally for shell templates.
+    safe_text = text.replace('"', '\\"')
+    return template.format(text=safe_text, out_wav=out_wav)
+
+
+def maybe_generate_audio(tts_cmd_template: str | None, caption: str, out_wav: str):
+    if tts_cmd_template is None:
+        return  # do nothing
+
+    cmd = render_tts_cmd(tts_cmd_template, caption, out_wav)
+    # Use shell=True because user passes a shell pipeline template (e.g., echo | piper)
+    subprocess.run(cmd, shell=True, check=True)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--coco_images_dir", type=str, required=True)
+    ap.add_argument("--coco_captions_json", type=str, required=True)
+    ap.add_argument("--out_audio_dir", type=str, required=True)
+    ap.add_argument("--out_manifest_jsonl", type=str, required=True)
+
+    ap.add_argument("--split", type=str, default="", help="Optional label like train2017/val2017")
+    ap.add_argument("--limit", type=int, default=0, help="0 = no limit")
+    ap.add_argument("--skip_missing_images", action="store_true")
+    ap.add_argument("--skip_audio_generation", action="store_true",
+                    help="If set, never run TTS even if --tts_cmd is provided.")
+    ap.add_argument("--tts_cmd", type=str, default=None,
+                    help='Optional shell template with {text} and {out_wav} placeholders.')
+
+    args = ap.parse_args()
+
+    coco_images_dir = Path(args.coco_images_dir)
+    out_audio_dir = Path(args.out_audio_dir)
+    out_audio_dir.mkdir(parents=True, exist_ok=True)
+
+    img_map, anns = load_coco(args.coco_captions_json)
+
+    out_manifest = Path(args.out_manifest_jsonl)
+    out_manifest.parent.mkdir(parents=True, exist_ok=True)
+
+    n_written = 0
+    n_skipped_img = 0
+    n_audio_gen = 0
+
+    with open(out_manifest, "w", encoding="utf-8") as w:
+        for ann in anns:
+            image_id = ann["image_id"]
+            caption = ann["caption"].strip()
+
+            file_name = img_map.get(image_id)
+            if file_name is None:
+                continue
+
+            image_path = coco_images_dir / file_name
+            if not image_path.exists():
+                if args.skip_missing_images:
+                    n_skipped_img += 1
+                    continue
+                else:
+                    raise FileNotFoundError(f"Missing image: {image_path}")
+
+            # Stable-ish audio filename per (image_id, caption)
+            uid = f"{image_id}_{short_hash(caption)}"
+            audio_path = out_audio_dir / f"{uid}.wav"
+
+            # Generate audio if requested and needed
+            if (not args.skip_audio_generation) and args.tts_cmd is not None and (not audio_path.exists()):
+                maybe_generate_audio(args.tts_cmd, caption, str(audio_path))
+                n_audio_gen += 1
+
+            row = {
+                "image_path": str(image_path),
+                "caption": caption,
+                "audio_path": str(audio_path),
+            }
+            if args.split:
+                row["split"] = args.split
+
+            w.write(json.dumps(row, ensure_ascii=False) + "\n")
+            n_written += 1
+
+            if args.limit and n_written >= args.limit:
+                break
+
+    print(f"✅ Wrote: {out_manifest}")
+    print(f"   Lines: {n_written}")
+    if n_skipped_img:
+        print(f"   Skipped missing images: {n_skipped_img}")
+    if args.tts_cmd is not None:
+        print(f"   Audio generated this run: {n_audio_gen}")
+        print(f"   Audio dir: {out_audio_dir}")
+
+
+if __name__ == "__main__":
+    main()
+
+
+================================================
+FILE: data/make_multilingual_coco_tts_manifest.py
+================================================
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+Create a multilingual COCO-TTS JSONL manifest from an existing English manifest.
+
+Input JSONL format (existing):
+{"image_path": "...", "caption": "...", "audio_path": "..."}
+
+Output JSONL format (multilingual, one row per language):
+{"image_path": "...", "lang": "en", "caption": "...", "english_caption": "...", "audio_path": "..."}
+{"image_path": "...", "lang": "hi", "caption": "...", "english_caption": "...", "audio_path": "..."}
+{"image_path": "...", "lang": "bn", "caption": "...", "english_caption": "...", "audio_path": "..."}
+
+Features:
+- Reads your existing English manifest
+- Keeps English rows
+- Translates captions to Hindi and Bengali using NLLB
+- Generates Hindi/Bengali TTS audio if requested
+- Resume-safe: skips audio files that already exist
+- Retry logic for flaky TTS commands
+
+python make_multilingual_coco_tts_manifest.py \
+  --input_manifest_jsonl /home/other/Niramay/DL/coco_train_tts.jsonl \
+  --out_manifest_jsonl /home/other/Niramay/DL/coco_train_tts_multilingual.jsonl \
+  --out_audio_dir /home/other/Niramay/DL/tts_wavs_multilingual \
+  --include_english \
+  --limit 5000 \
+  --tts_cmd_hi 'edge-tts --text "{text}" --voice hi-IN-SwaraNeural --write-media "{out_wav}"' \
+  --tts_cmd_bn 'edge-tts --text "{text}" --voice bn-IN-TanishaaNeural --write-media "{out_wav}"' \
+  --skip_missing_images
+"""
+
+import argparse
+import hashlib
+import json
+import subprocess
+import time
+from pathlib import Path
+
+import torch
+from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+
+
+# -----------------------------
+# Helpers
+# -----------------------------
+
+def short_hash(text: str, n: int = 10) -> str:
+    return hashlib.md5(text.encode("utf-8")).hexdigest()[:n]
+
+
+def read_jsonl(path: str):
+    rows = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            rows.append(json.loads(line))
+    return rows
+
+
+def render_tts_cmd(template: str, text: str, out_wav: str) -> str:
+    safe_text = text.replace('"', '\\"')
+    return template.format(text=safe_text, out_wav=out_wav)
+
+
+def maybe_generate_audio(
+    tts_cmd_template: str | None,
+    caption: str,
+    out_wav: str,
+    max_retries: int = 5,
+    retry_sleep: float = 5.0,
+    continue_on_error: bool = True,
+    success_sleep: float = 0.5,
+):
+    if tts_cmd_template is None:
+        return False
+
+    cmd = render_tts_cmd(tts_cmd_template, caption, out_wav)
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            subprocess.run(cmd, shell=True, check=True)
+            time.sleep(success_sleep)
+            return True
+        except subprocess.CalledProcessError as e:
+            print(f"[TTS ERROR] attempt {attempt}/{max_retries} failed")
+            print(f"Command: {cmd}")
+            print(f"Exit code: {e.returncode}")
+
+            if attempt < max_retries:
+                print(f"Sleeping {retry_sleep} seconds before retry...\n")
+                time.sleep(retry_sleep)
+            else:
+                print("[TTS ERROR] Max retries reached.")
+                if continue_on_error:
+                    print(f"[TTS SKIP] Skipping caption: {caption}\n")
+                    return False
+                raise
+
+
+# -----------------------------
+# Translator using NLLB
+# -----------------------------
+
+class NLLBTranslator:
+    """
+    Uses facebook/nllb-200-distilled-600M for translation.
+
+    Language codes:
+      English: eng_Latn
+      Hindi:   hin_Deva
+      Bengali: ben_Beng
+    """
+    def __init__(self, model_name="facebook/nllb-200-distilled-600M", device=None):
+        self.model_name = model_name
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = device
+        self.model.to(self.device)
+
+    def translate(self, text: str, src_lang: str, tgt_lang: str, max_new_tokens: int = 128) -> str:
+        self.tokenizer.src_lang = src_lang
+        inputs = self.tokenizer(text, return_tensors="pt", truncation=True).to(self.device)
+
+        forced_bos_token_id = self.tokenizer.convert_tokens_to_ids(tgt_lang)
+
+        generated = self.model.generate(
+            **inputs,
+            forced_bos_token_id=forced_bos_token_id,
+            max_new_tokens=max_new_tokens,
+        )
+        out = self.tokenizer.batch_decode(generated, skip_special_tokens=True)[0]
+        return out.strip()
+
+
+# -----------------------------
+# Main
+# -----------------------------
+
+def main():
+    ap = argparse.ArgumentParser()
+
+    ap.add_argument("--input_manifest_jsonl", type=str, required=True,
+                    help="Existing English JSONL manifest.")
+    ap.add_argument("--out_manifest_jsonl", type=str, required=True,
+                    help="Output multilingual JSONL manifest.")
+    ap.add_argument("--out_audio_dir", type=str, required=True,
+                    help="Directory to store generated Hindi/Bengali audio.")
+
+    ap.add_argument("--limit", type=int, default=0, help="0 = no limit")
+    ap.add_argument("--include_english", action="store_true",
+                    help="Include English rows from input manifest in output.")
+    ap.add_argument("--skip_missing_images", action="store_true")
+
+    ap.add_argument("--skip_translation", action="store_true",
+                    help="If set, does not translate. Useful for debugging.")
+    ap.add_argument("--skip_audio_generation", action="store_true",
+                    help="If set, never run TTS even if TTS commands are provided.")
+
+    ap.add_argument("--translate_model", type=str,
+                    default="facebook/nllb-200-distilled-600M")
+
+    # Separate TTS commands per language
+    ap.add_argument("--tts_cmd_hi", type=str, default=None,
+                    help='Shell template with {text} and {out_wav} for Hindi TTS.')
+    ap.add_argument("--tts_cmd_bn", type=str, default=None,
+                    help='Shell template with {text} and {out_wav} for Bengali TTS.')
+
+    # Retry params
+    ap.add_argument("--max_retries", type=int, default=5)
+    ap.add_argument("--retry_sleep", type=float, default=5.0)
+    ap.add_argument("--success_sleep", type=float, default=0.5)
+
+    args = ap.parse_args()
+
+    out_audio_dir = Path(args.out_audio_dir)
+    out_audio_dir.mkdir(parents=True, exist_ok=True)
+
+    hi_audio_dir = out_audio_dir / "hi"
+    bn_audio_dir = out_audio_dir / "bn"
+    hi_audio_dir.mkdir(parents=True, exist_ok=True)
+    bn_audio_dir.mkdir(parents=True, exist_ok=True)
+
+    rows = read_jsonl(args.input_manifest_jsonl)
+
+    translator = None
+    if not args.skip_translation:
+        print(f"Loading translator model: {args.translate_model}")
+        translator = NLLBTranslator(model_name=args.translate_model)
+
+    out_manifest = Path(args.out_manifest_jsonl)
+    out_manifest.parent.mkdir(parents=True, exist_ok=True)
+
+    n_written = 0
+    n_hi_audio = 0
+    n_bn_audio = 0
+    n_skipped_img = 0
+
+    with open(out_manifest, "w", encoding="utf-8") as w:
+        for idx, row in enumerate(rows):
+            image_path = Path(row["image_path"])
+            english_caption = row["caption"].strip()
+            english_audio_path = row["audio_path"]
+
+            if not image_path.exists():
+                if args.skip_missing_images:
+                    n_skipped_img += 1
+                    continue
+                raise FileNotFoundError(f"Missing image: {image_path}")
+
+            # Stable uid from original English caption
+            uid = f"{image_path.stem}_{short_hash(english_caption)}"
+
+            # 1) English row
+            if args.include_english:
+                en_row = {
+                    "image_path": str(image_path),
+                    "lang": "en",
+                    "caption": english_caption,
+                    "english_caption": english_caption,
+                    "audio_path": english_audio_path,
+                }
+                w.write(json.dumps(en_row, ensure_ascii=False) + "\n")
+                n_written += 1
+
+            # 2) Hindi row
+            if not args.skip_translation:
+                hi_caption = translator.translate(
+                    english_caption,
+                    src_lang="eng_Latn",
+                    tgt_lang="hin_Deva"
+                )
+            else:
+                hi_caption = english_caption
+
+            hi_audio_path = hi_audio_dir / f"{uid}_hi.wav"
+
+            if (not args.skip_audio_generation) and args.tts_cmd_hi is not None and (not hi_audio_path.exists()):
+                generated = maybe_generate_audio(
+                    args.tts_cmd_hi,
+                    hi_caption,
+                    str(hi_audio_path),
+                    max_retries=args.max_retries,
+                    retry_sleep=args.retry_sleep,
+                    success_sleep=args.success_sleep,
+                    continue_on_error=True,
+                )
+                if generated:
+                    n_hi_audio += 1
+
+            hi_row = {
+                "image_path": str(image_path),
+                "lang": "hi",
+                "caption": hi_caption,
+                "english_caption": english_caption,
+                "audio_path": str(hi_audio_path),
+            }
+            w.write(json.dumps(hi_row, ensure_ascii=False) + "\n")
+            n_written += 1
+
+            # 3) Bengali row
+            if not args.skip_translation:
+                bn_caption = translator.translate(
+                    english_caption,
+                    src_lang="eng_Latn",
+                    tgt_lang="ben_Beng"
+                )
+            else:
+                bn_caption = english_caption
+
+            bn_audio_path = bn_audio_dir / f"{uid}_bn.wav"
+
+            if (not args.skip_audio_generation) and args.tts_cmd_bn is not None and (not bn_audio_path.exists()):
+                generated = maybe_generate_audio(
+                    args.tts_cmd_bn,
+                    bn_caption,
+                    str(bn_audio_path),
+                    max_retries=args.max_retries,
+                    retry_sleep=args.retry_sleep,
+                    success_sleep=args.success_sleep,
+                    continue_on_error=True,
+                )
+                if generated:
+                    n_bn_audio += 1
+
+            bn_row = {
+                "image_path": str(image_path),
+                "lang": "bn",
+                "caption": bn_caption,
+                "english_caption": english_caption,
+                "audio_path": str(bn_audio_path),
+            }
+            w.write(json.dumps(bn_row, ensure_ascii=False) + "\n")
+            n_written += 1
+
+            if args.limit and (idx + 1) >= args.limit:
+                break
+
+            if (idx + 1) % 100 == 0:
+                print(f"Processed {idx + 1} source rows...")
+
+    print(f"\n✅ Wrote multilingual manifest: {out_manifest}")
+    print(f"   Rows written: {n_written}")
+    print(f"   Hindi audio generated this run: {n_hi_audio}")
+    print(f"   Bengali audio generated this run: {n_bn_audio}")
+    if n_skipped_img:
+        print(f"   Skipped missing images: {n_skipped_img}")
+
+
+if __name__ == "__main__":
+    main()
+
+
+================================================
+FILE: data/split.py
+================================================
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Split English COCO-TTS manifest into train / val sets.
+
+Usage:
+    python data/split.py --out_dir /path/to/out_dir
+"""
+
+import argparse
+import json
+import random
+from pathlib import Path
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--out_dir", type=str, required=True,
+                    help="Directory containing coco_train_tts.jsonl (output written here too)")
+    ap.add_argument("--val_ratio", type=float, default=0.20)
+    ap.add_argument("--seed", type=int, default=42)
+    args = ap.parse_args()
+
+    out_dir = Path(args.out_dir)
+    inp       = out_dir / "coco_train_tts.jsonl"
+    train_out = out_dir / "coco_train_tts_train.jsonl"
+    val_out   = out_dir / "coco_train_tts_val.jsonl"
+
+    random.seed(args.seed)
+
+    with open(inp, "r", encoding="utf-8") as f:
+        rows = [json.loads(x) for x in f]
+
+    random.shuffle(rows)
+    n_val = int(args.val_ratio * len(rows))
+
+    val_rows   = rows[:n_val]
+    train_rows = rows[n_val:]
+
+    for path, split_rows in [(train_out, train_rows), (val_out, val_rows)]:
+        with open(path, "w", encoding="utf-8") as f:
+            for r in split_rows:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+
+    print(f"train : {len(train_rows)}")
+    print(f"val   : {len(val_rows)}")
+    print(f"Saved : {train_out}")
+    print(f"Saved : {val_out}")
+
+
+if __name__ == "__main__":
+    main()
+
+
+================================================
+FILE: data/split_multilingual_manifest.py
+================================================
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Split multilingual COCO-TTS manifest into train / val sets,
+keeping all language rows for a given image/caption pair together.
+
+Usage:
+    python data/split_multilingual_manifest.py --out_dir /path/to/out_dir
+"""
+
+import argparse
+import json
+import random
+from collections import defaultdict
+from pathlib import Path
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--out_dir", type=str, required=True,
+                    help="Directory containing coco_train_tts_multilingual.jsonl")
+    ap.add_argument("--val_ratio", type=float, default=0.1)
+    ap.add_argument("--seed", type=int, default=42)
+    args = ap.parse_args()
+
+    out_dir    = Path(args.out_dir)
+    input_jsonl = out_dir / "coco_train_tts_multilingual.jsonl"
+    train_jsonl = out_dir / "coco_train_tts_multilingual_train.jsonl"
+    val_jsonl   = out_dir / "coco_train_tts_multilingual_val.jsonl"
+
+    random.seed(args.seed)
+
+    groups = defaultdict(list)
+    with open(input_jsonl, "r", encoding="utf-8") as f:
+        for line in f:
+            row = json.loads(line)
+            key = (row["image_path"], row["english_caption"])
+            groups[key].append(row)
+
+    keys = list(groups.keys())
+    random.shuffle(keys)
+
+    n_val     = int(len(keys) * args.val_ratio)
+    val_keys  = set(keys[:n_val])
+
+    train_rows, val_rows = [], []
+    for k, rows in groups.items():
+        if k in val_keys:
+            val_rows.extend(rows)
+        else:
+            train_rows.extend(rows)
+
+    with open(train_jsonl, "w", encoding="utf-8") as f:
+        for r in train_rows:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+
+    with open(val_jsonl, "w", encoding="utf-8") as f:
+        for r in val_rows:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+
+    print(f"Train rows   : {len(train_rows)}")
+    print(f"Val rows     : {len(val_rows)}")
+    print(f"Train groups : {len(keys) - n_val}")
+    print(f"Val groups   : {n_val}")
+    print(f"Saved : {train_jsonl}")
+    print(f"Saved : {val_jsonl}")
+
+
+if __name__ == "__main__":
+    main()
+
+
+================================================
+FILE: evaluation/eval_retrieval_multilingual_base.py
+================================================
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Evaluate random baseline (untrained Whisper projection head).
+
+Usage:
+    python evaluation/eval_retrieval_multilingual_base.py \
+        --manifest /path/to/coco_train_tts_multilingual_val.jsonl
+"""
+
+import argparse
+import torch
+import torch.nn.functional as F
+from torch.utils.data import DataLoader
+import open_clip
+from tqdm import tqdm
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from data_coco_tts_multilingual import CocoTtsMultilingual, collate_coco_tts_multilingual
+from models.models_whisper import WhisperAudioEncoder
+
+
+@torch.no_grad()
+def compute_embeddings(audio_model, clip_model, loader, device):
+    audio_embeds = []
+    image_embeds = []
+    for batch in tqdm(loader, desc="Encoding"):
+        images = batch["image"].to(device, non_blocking=True)
+        mels   = batch["mel"].to(device, non_blocking=True)
+        img_emb = F.normalize(clip_model.encode_image(images), dim=-1)
+        aud_emb = F.normalize(audio_model(mels), dim=-1)
+        image_embeds.append(img_emb.cpu())
+        audio_embeds.append(aud_emb.cpu())
+    return torch.cat(audio_embeds, dim=0), torch.cat(image_embeds, dim=0)
+
+
+def ranks_from_similarity(similarity):
+    sorted_indices = torch.argsort(similarity, dim=1, descending=True)
+    ranks = [(sorted_indices[i] == i).nonzero(as_tuple=False).item() + 1
+             for i in range(similarity.size(0))]
+    return torch.tensor(ranks)
+
+
+def metrics_from_ranks(ranks):
+    return {
+        "R@1": (ranks <= 1).float().mean().item(),
+        "R@5": (ranks <= 5).float().mean().item(),
+        "R@10": (ranks <= 10).float().mean().item(),
+        "MRR": (1.0 / ranks.float()).mean().item(),
+        "MedianRank": ranks.median().item(),
+    }
+
+
+def print_metrics(title, metrics):
+    print(f"\n{title}")
+    print("-" * len(title))
+    print(f"R@1        : {metrics['R@1'] * 100:.2f}")
+    print(f"R@5        : {metrics['R@5'] * 100:.2f}")
+    print(f"R@10       : {metrics['R@10'] * 100:.2f}")
+    print(f"MRR        : {metrics['MRR']:.4f}")
+    print(f"Median Rank: {metrics['MedianRank']}")
+
+
+def evaluate_subset(manifest_path, lang_filter=None):
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    clip_model, _, clip_preprocess = open_clip.create_model_and_transforms(
+        "ViT-B-32", pretrained="openai"
+    )
+    clip_tokenizer = open_clip.get_tokenizer("ViT-B-32")
+    clip_model = clip_model.to(device).eval()
+    for p in clip_model.parameters():
+        p.requires_grad = False
+
+    ds = CocoTtsMultilingual(
+        manifest_jsonl=manifest_path,
+        clip_preprocess=clip_preprocess,
+        clip_tokenizer=clip_tokenizer,
+    )
+    if lang_filter is not None:
+        ds.rows = [r for r in ds.rows if r["lang"] == lang_filter]
+
+    loader = DataLoader(
+        ds, batch_size=32, shuffle=False, num_workers=4,
+        pin_memory=True, collate_fn=collate_coco_tts_multilingual,
+    )
+
+    # BASELINE: random projection head — no checkpoint loaded
+    audio_model = WhisperAudioEncoder(
+        whisper_name="openai/whisper-small", embed_dim=512, freeze_encoder=True
+    ).to(device)
+    print("\nUsing BASELINE model: random/untrained Whisper projection head")
+    audio_model.eval()
+
+    audio_embeds, image_embeds = compute_embeddings(audio_model, clip_model, loader, device)
+    sim_a2i = audio_embeds @ image_embeds.T
+    sim_i2a = image_embeds @ audio_embeds.T
+
+    label = "ALL" if lang_filter is None else lang_filter.upper()
+    print_metrics(f"BASELINE {label} Audio -> Image Retrieval", metrics_from_ranks(ranks_from_similarity(sim_a2i)))
+    print_metrics(f"BASELINE {label} Image -> Audio Retrieval", metrics_from_ranks(ranks_from_similarity(sim_i2a)))
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--manifest", type=str, required=True,
+                    help="Path to coco_train_tts_multilingual_val.jsonl")
+    args = ap.parse_args()
+    for lang in ("en", "hi", "bn", None):
+        evaluate_subset(args.manifest, lang_filter=lang)
+
+
+if __name__ == "__main__":
+    main()
+
+
+================================================
+FILE: evaluation/eval_retrieval_multilingual_cnn.py
+================================================
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Evaluate the CNN multilingual audio encoder.
+
+Usage:
+    python evaluation/eval_retrieval_multilingual_cnn.py \
+        --manifest    /path/to/coco_train_tts_multilingual_val.jsonl \
+        --checkpoint  /path/to/audio_encoder_cnn_multilingual.pt
+"""
+
+import argparse
+import torch
+import torch.nn.functional as F
+from torch.utils.data import DataLoader
+import open_clip
+from tqdm import tqdm
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from data_coco_tts_multilingual import CocoTtsMultilingual, collate_coco_tts_multilingual
+from models.models_cnn import AudioEncoder
+
+
+@torch.no_grad()
+def compute_embeddings(audio_model, clip_model, loader, device):
+    audio_embeds = []
+    image_embeds = []
+
+    for batch in tqdm(loader, desc="Encoding"):
+        images = batch["image"].to(device, non_blocking=True)
+        mels   = batch["mel"].to(device, non_blocking=True)
+
+        img_emb = clip_model.encode_image(images)
+        img_emb = F.normalize(img_emb, dim=-1)
+
+        aud_emb = audio_model(mels)
+        aud_emb = F.normalize(aud_emb, dim=-1)
+
+        image_embeds.append(img_emb.cpu())
+        audio_embeds.append(aud_emb.cpu())
+
+    return torch.cat(audio_embeds, dim=0), torch.cat(image_embeds, dim=0)
+
+
+def ranks_from_similarity(similarity):
+    sorted_indices = torch.argsort(similarity, dim=1, descending=True)
+    ranks = [(sorted_indices[i] == i).nonzero(as_tuple=False).item() + 1
+             for i in range(similarity.size(0))]
+    return torch.tensor(ranks)
+
+
+def metrics_from_ranks(ranks):
+    return {
+        "R@1":        (ranks <= 1).float().mean().item(),
+        "R@5":        (ranks <= 5).float().mean().item(),
+        "R@10":       (ranks <= 10).float().mean().item(),
+        "MRR":        (1.0 / ranks.float()).mean().item(),
+        "MedianRank": ranks.median().item(),
+    }
+
+
+def print_metrics(title, metrics):
+    print(f"\n{title}")
+    print("-" * len(title))
+    print(f"R@1        : {metrics['R@1'] * 100:.2f}")
+    print(f"R@5        : {metrics['R@5'] * 100:.2f}")
+    print(f"R@10       : {metrics['R@10'] * 100:.2f}")
+    print(f"MRR        : {metrics['MRR']:.4f}")
+    print(f"Median Rank: {metrics['MedianRank']}")
+
+
+def evaluate_subset(manifest_path, checkpoint_path, lang_filter=None):
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    clip_model, _, clip_preprocess = open_clip.create_model_and_transforms(
+        "ViT-B-32", pretrained="openai"
+    )
+    clip_tokenizer = open_clip.get_tokenizer("ViT-B-32")
+    clip_model = clip_model.to(device).eval()
+    for p in clip_model.parameters():
+        p.requires_grad = False
+
+    ds = CocoTtsMultilingual(
+        manifest_jsonl=manifest_path,
+        clip_preprocess=clip_preprocess,
+        clip_tokenizer=clip_tokenizer,
+    )
+    if lang_filter is not None:
+        ds.rows = [r for r in ds.rows if r["lang"] == lang_filter]
+
+    loader = DataLoader(
+        ds, batch_size=32, shuffle=False, num_workers=4,
+        pin_memory=True, collate_fn=collate_coco_tts_multilingual,
+    )
+
+    audio_model = AudioEncoder(n_mels=80, embed_dim=512).to(device)
+    state = torch.load(checkpoint_path, map_location=device)
+    audio_model.load_state_dict(state)
+    print(f"\nLoaded CNN checkpoint: {checkpoint_path}")
+    audio_model.eval()
+
+    audio_embeds, image_embeds = compute_embeddings(audio_model, clip_model, loader, device)
+
+    sim_a2i = audio_embeds @ image_embeds.T
+    sim_i2a = image_embeds @ audio_embeds.T
+
+    label = "ALL" if lang_filter is None else lang_filter.upper()
+    print_metrics(f"CNN {label} Audio -> Image Retrieval", metrics_from_ranks(ranks_from_similarity(sim_a2i)))
+    print_metrics(f"CNN {label} Image -> Audio Retrieval", metrics_from_ranks(ranks_from_similarity(sim_i2a)))
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--manifest",   type=str, required=True,
+                    help="Path to coco_train_tts_multilingual_val.jsonl")
+    ap.add_argument("--checkpoint", type=str, required=True,
+                    help="Path to audio_encoder_cnn_multilingual.pt")
+    args = ap.parse_args()
+
+    for lang in ("en", "hi", "bn", None):
+        evaluate_subset(args.manifest, args.checkpoint, lang_filter=lang)
+
+
+if __name__ == "__main__":
+    main()
+
+
+================================================
+FILE: evaluation/eval_retrieval_multilingual_whisper.py
+================================================
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Evaluate the Whisper multilingual audio encoder.
+
+Usage:
+    python evaluation/eval_retrieval_multilingual_whisper.py \
+        --manifest    /path/to/coco_train_tts_multilingual_val.jsonl \
+        --checkpoint  /path/to/audio_encoder_multilingual.pt
+"""
+
+import argparse
+import torch
+import torch.nn.functional as F
+from torch.utils.data import DataLoader
+import open_clip
+from tqdm import tqdm
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from data_coco_tts_multilingual import CocoTtsMultilingual, collate_coco_tts_multilingual
+from models.models_whisper import WhisperAudioEncoder
+
+
+@torch.no_grad()
+def compute_embeddings(audio_model, clip_model, loader, device):
+    audio_embeds = []
+    image_embeds = []
+
+    for batch in tqdm(loader, desc="Encoding"):
+        images = batch["image"].to(device, non_blocking=True)
+        mels   = batch["mel"].to(device, non_blocking=True)
+
+        img_emb = clip_model.encode_image(images)
+        img_emb = F.normalize(img_emb, dim=-1)
+
+        aud_emb = audio_model(mels)
+        aud_emb = F.normalize(aud_emb, dim=-1)
+
+        image_embeds.append(img_emb.cpu())
+        audio_embeds.append(aud_emb.cpu())
+
+    return torch.cat(audio_embeds, dim=0), torch.cat(image_embeds, dim=0)
+
+
+def ranks_from_similarity(similarity):
+    sorted_indices = torch.argsort(similarity, dim=1, descending=True)
+    ranks = [(sorted_indices[i] == i).nonzero(as_tuple=False).item() + 1
+             for i in range(similarity.size(0))]
+    return torch.tensor(ranks)
+
+
+def metrics_from_ranks(ranks):
+    return {
+        "R@1":        (ranks <= 1).float().mean().item(),
+        "R@5":        (ranks <= 5).float().mean().item(),
+        "R@10":       (ranks <= 10).float().mean().item(),
+        "MRR":        (1.0 / ranks.float()).mean().item(),
+        "MedianRank": ranks.median().item(),
+    }
+
+
+def print_metrics(title, metrics):
+    print(f"\n{title}")
+    print("-" * len(title))
+    print(f"R@1        : {metrics['R@1'] * 100:.2f}")
+    print(f"R@5        : {metrics['R@5'] * 100:.2f}")
+    print(f"R@10       : {metrics['R@10'] * 100:.2f}")
+    print(f"MRR        : {metrics['MRR']:.4f}")
+    print(f"Median Rank: {metrics['MedianRank']}")
+
+
+def evaluate_subset(manifest_path, checkpoint_path, lang_filter=None):
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    clip_model, _, clip_preprocess = open_clip.create_model_and_transforms(
+        "ViT-B-32", pretrained="openai"
+    )
+    clip_tokenizer = open_clip.get_tokenizer("ViT-B-32")
+    clip_model = clip_model.to(device).eval()
+    for p in clip_model.parameters():
+        p.requires_grad = False
+
+    ds = CocoTtsMultilingual(
+        manifest_jsonl=manifest_path,
+        clip_preprocess=clip_preprocess,
+        clip_tokenizer=clip_tokenizer,
+    )
+    if lang_filter is not None:
+        ds.rows = [r for r in ds.rows if r["lang"] == lang_filter]
+
+    loader = DataLoader(
+        ds, batch_size=32, shuffle=False, num_workers=4,
+        pin_memory=True, collate_fn=collate_coco_tts_multilingual,
+    )
+
+    audio_model = WhisperAudioEncoder(
+        whisper_name="openai/whisper-small", embed_dim=512, freeze_encoder=True
+    ).to(device)
+
+    state = torch.load(checkpoint_path, map_location=device)
+    audio_model.load_state_dict(state)
+    audio_model.eval()
+
+    audio_embeds, image_embeds = compute_embeddings(audio_model, clip_model, loader, device)
+
+    sim_a2i = audio_embeds @ image_embeds.T
+    sim_i2a = image_embeds @ audio_embeds.T
+
+    label = "ALL" if lang_filter is None else lang_filter.upper()
+    print_metrics(f"WHISPER {label} Audio -> Image Retrieval", metrics_from_ranks(ranks_from_similarity(sim_a2i)))
+    print_metrics(f"WHISPER {label} Image -> Audio Retrieval", metrics_from_ranks(ranks_from_similarity(sim_i2a)))
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--manifest",   type=str, required=True,
+                    help="Path to coco_train_tts_multilingual_val.jsonl")
+    ap.add_argument("--checkpoint", type=str, required=True,
+                    help="Path to audio_encoder_multilingual.pt")
+    args = ap.parse_args()
+
+    for lang in ("en", "hi", "bn", None):
+        evaluate_subset(args.manifest, args.checkpoint, lang_filter=lang)
+
+
+if __name__ == "__main__":
+    main()
+
+
+================================================
+FILE: models/models_cnn.py
+================================================
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class AudioEncoder(nn.Module):
+    def __init__(self, n_mels=80, embed_dim=512):
+        super().__init__()
+
+        self.net = nn.Sequential(
+            nn.Conv2d(1, 64, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+
+            nn.Conv2d(128, 256, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool2d((1, 1))
+        )
+
+        self.proj = nn.Linear(256, embed_dim)
+
+    def forward(self, mel):
+        # mel: [B, n_mels, T]
+        x = mel.unsqueeze(1)      # [B, 1, n_mels, T]
+        x = self.net(x)           # [B, 256, 1, 1]
+        x = x.flatten(1)          # [B, 256]
+        x = self.proj(x)          # [B, embed_dim]
+        x = F.normalize(x, dim=-1)
+        return x
+
+
+================================================
+FILE: models/models_whisper.py
+================================================
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from transformers import WhisperModel
+
+
+class WhisperAudioEncoder(nn.Module):
+    def __init__(
+        self,
+        whisper_name="openai/whisper-medium",
+        embed_dim=512,
+        freeze_encoder=True,
+    ):
+        super().__init__()
+
+        self.whisper = WhisperModel.from_pretrained(whisper_name)
+        self.hidden_size = self.whisper.config.d_model
+
+        if freeze_encoder:
+            for p in self.whisper.encoder.parameters():
+                p.requires_grad = False
+
+        self.proj = nn.Linear(self.hidden_size, embed_dim)
+
+    def forward(self, mel):
+        """
+        mel: [B, 80, T]
+        Whisper expects [B, 80, 3000] in the usual setup.
+        So we pad or crop to T=3000.
+        """
+        b, n_mels, t = mel.shape
+
+        if t < 3000:
+            pad = 3000 - t
+            mel = F.pad(mel, (0, pad))
+        elif t > 3000:
+            mel = mel[:, :, :3000]
+
+        out = self.whisper.encoder(input_features=mel)
+        x = out.last_hidden_state              # [B, T', H]
+        x = x.mean(dim=1)                      # mean pool over time
+        x = self.proj(x)                       # [B, 512]
+        x = F.normalize(x, dim=-1)
+        return x
+
+
+================================================
+FILE: retrieval/build_image_index.py
+================================================
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Build a CLIP image embedding index from a multilingual COCO-TTS manifest.
+
+Usage:
+    python retrieval/build_image_index.py \
+        --manifest /path/to/coco_train_tts_multilingual_train.jsonl \
+        --output   /path/to/image_index.pt
+"""
+
+import argparse
+import json
+import torch
+import torch.nn.functional as F
+from torch.utils.data import Dataset, DataLoader
+from PIL import Image
+import open_clip
+from tqdm import tqdm
+
+
+class ImageOnlyDataset(Dataset):
+    def __init__(self, manifest_jsonl, clip_preprocess):
+        self.clip_preprocess = clip_preprocess
+
+        seen = set()
+        self.image_paths = []
+
+        with open(manifest_jsonl, "r", encoding="utf-8") as f:
+            for line in f:
+                row = json.loads(line)
+                path = row["image_path"]
+                if path not in seen:
+                    seen.add(path)
+                    self.image_paths.append(path)
+
+    def __len__(self):
+        return len(self.image_paths)
+
+    def __getitem__(self, idx):
+        path = self.image_paths[idx]
+        image = Image.open(path).convert("RGB")
+        image = self.clip_preprocess(image)
+        return {"image": image, "image_path": path}
+
+
+def collate_fn(batch):
+    images = torch.stack([x["image"] for x in batch], dim=0)
+    image_paths = [x["image_path"] for x in batch]
+    return {"image": images, "image_path": image_paths}
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--manifest", type=str, required=True,
+                    help="Path to coco_train_tts_multilingual_train.jsonl")
+    ap.add_argument("--output", type=str, required=True,
+                    help="Output path for image_index.pt")
+    ap.add_argument("--batch_size", type=int, default=64)
+    ap.add_argument("--num_workers", type=int, default=4)
+    args = ap.parse_args()
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print("Device:", device)
+
+    clip_model, _, clip_preprocess = open_clip.create_model_and_transforms(
+        "ViT-B-32", pretrained="openai"
+    )
+    clip_model = clip_model.to(device).eval()
+
+    dataset = ImageOnlyDataset(args.manifest, clip_preprocess)
+    loader = DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.num_workers,
+        pin_memory=True,
+        collate_fn=collate_fn,
+    )
+
+    all_embs  = []
+    all_paths = []
+
+    with torch.no_grad():
+        for batch in tqdm(loader, desc="Indexing images"):
+            images = batch["image"].to(device, non_blocking=True)
+            emb = clip_model.encode_image(images)
+            emb = F.normalize(emb, dim=-1)
+            all_embs.append(emb.cpu())
+            all_paths.extend(batch["image_path"])
+
+    all_embs = torch.cat(all_embs, dim=0)
+
+    torch.save({"image_paths": all_paths, "embeddings": all_embs}, args.output)
+
+    print(f"Saved image index to : {args.output}")
+    print(f"Total indexed images : {len(all_paths)}")
+    print(f"Embedding shape      : {tuple(all_embs.shape)}")
+
+
+if __name__ == "__main__":
+    main()
+
+
+================================================
+FILE: retrieval/build_tag_index.py
+================================================
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+build_tag_index.py
+==================
+Builds a JSON tag index from the multilingual COCO manifest:
+
+    { "/path/to/img.jpg": ["dog", "surfboard", "beach", ...], ... }
+
+The tags are extracted from the English captions using the same
+keyword extractor in query_processor.py (no ML required — fast).
+
+Optionally, if spaCy is available, uses NOUN extraction for richer tags.
+
+Usage
+-----
+  python build_tag_index.py \
+    --manifest coco_train_tts_multilingual_train.jsonl \
+    --output   coco_tags.json
+
+The resulting JSON can be passed to HybridRetriever via --tag_index.
+"""
+
+import json
+import argparse
+from collections import defaultdict
+from pathlib import Path
+from tqdm import tqdm
+
+from query_processor import QueryProcessor, COCO_OBJECTS, COMMON_ATTRIBUTES
+
+
+def build_tag_index(manifest_path: str, output_path: str, use_spacy: bool = True):
+    """
+    Read the manifest and extract per-image tags from English captions.
+
+    For each image, all English captions across languages are combined
+    so the tag set is as rich as possible.
+    """
+    # image_path → set of tags
+    tag_map = defaultdict(set)
+
+    # load QueryProcessor for keyword extraction (no translation needed)
+    qp = QueryProcessor(translate=False, use_spacy=use_spacy)
+
+    print(f"[build_tag_index] Reading manifest: {manifest_path}")
+    rows = []
+    with open(manifest_path, "r", encoding="utf-8") as f:
+        for line in f:
+            rows.append(json.loads(line))
+
+    print(f"[build_tag_index] Processing {len(rows)} rows…")
+    for row in tqdm(rows, desc="Extracting tags"):
+        img_path = row["image_path"]
+        caption  = row.get("english_caption", row.get("caption", ""))
+        if not caption:
+            continue
+
+        qc = qp.process(caption, src_lang="en")
+
+        # combine objects + attributes into tags
+        for kw in qc.objects + qc.attributes:
+            kw = kw.lower().strip()
+            if len(kw) >= 3:
+                tag_map[img_path].add(kw)
+
+        # also add raw COCO-object matches from caption tokens
+        for tok in caption.lower().split():
+            if tok in COCO_OBJECTS:
+                tag_map[img_path].add(tok)
+
+    # convert sets to sorted lists for JSON serialisation
+    tag_dict = {path: sorted(tags) for path, tags in tag_map.items()}
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(tag_dict, f, ensure_ascii=False, indent=2)
+
+    n_images = len(tag_dict)
+    n_tags   = sum(len(v) for v in tag_dict.values())
+    print(f"\n[build_tag_index] Done.")
+    print(f"  Images indexed  : {n_images}")
+    print(f"  Total tag pairs : {n_tags}")
+    print(f"  Avg tags/image  : {n_tags / max(n_images, 1):.1f}")
+    print(f"  Saved to        : {output_path}")
+
+
+def main():
+    p = argparse.ArgumentParser(description="Build per-image tag index from COCO manifest")
+    p.add_argument("--manifest", required=True,
+                   help="Path to coco_train_tts_multilingual_train.jsonl")
+    p.add_argument("--output",   default="coco_tags.json",
+                   help="Output JSON file path")
+    p.add_argument("--no_spacy", action="store_true",
+                   help="Disable spaCy (use keyword matching only)")
+    args = p.parse_args()
+
+    build_tag_index(
+        manifest_path = args.manifest,
+        output_path   = args.output,
+        use_spacy     = not args.no_spacy,
+    )
+
+
+if __name__ == "__main__":
+    main()
+
+
+
+================================================
+FILE: retrieval/hybrid_retrieval.py
+================================================
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+hybrid_retrieval.py
+===================
+Step 5 of the hybrid search pipeline: retrieve images using:
+  a) Semantic similarity from the full normalised sentence (CLIP text embedding)
+  b) Object/tag-based filtering using extracted keywords
+
+The two scores are fused with a configurable alpha parameter:
+
+    final_score = alpha * semantic_score + (1 - alpha) * tag_score
+
+Architecture
+------------
+- Image index: pre-built .pt file with {image_paths, embeddings}
+  (same format produced by build_image_index.py)
+- CLIP text encoder: used to embed the normalised query string
+- Tag index (optional): a JSON mapping image_path → [list of COCO tags]
+  If not provided, tag filtering is skipped (pure semantic search).
+
+Usage
+-----
+    from hybrid_retrieval import HybridRetriever
+    from query_processor import QueryProcessor
+
+    retriever = HybridRetriever(
+        image_index_path="image_index.pt",
+        clip_model_name="ViT-B-32",
+    )
+    qp = QueryProcessor(translate=False)
+    qc = qp.process("red dog on surfboard")
+
+    results = retriever.retrieve(qc, top_k=9)
+    for rank, r in enumerate(results, 1):
+        print(rank, r['score']:.4f, r['image_path'])
+"""
+
+import json
+import math
+from pathlib import Path
+from typing import List, Optional, Dict
+
+import torch
+import torch.nn.functional as F
+import open_clip
+
+from query_processor import QueryComponents
+
+
+class HybridRetriever:
+    """
+    Loads a pre-built CLIP image index and performs hybrid retrieval.
+
+    Parameters
+    ----------
+    image_index_path : str
+        Path to ``image_index.pt`` produced by ``build_image_index.py``.
+    clip_model_name : str
+        Open-CLIP model name (default: ``ViT-B-32``).
+    clip_pretrained : str
+        Open-CLIP pretrained weights key (default: ``openai``).
+    tag_index_path : str or None
+        Optional path to a JSON file mapping image paths to tag lists:
+        ``{"path/to/img.jpg": ["dog", "beach", "person"], ...}``
+        If None, tag filtering is disabled (pure semantic mode).
+    alpha : float
+        Weight for semantic score in fusion (0.0 = pure tag, 1.0 = pure semantic).
+        Default: 0.7
+    device : str or None
+        'cuda', 'cpu', or None (auto-detect).
+    """
+
+    def __init__(
+        self,
+        image_index_path: str,
+        clip_model_name: str = "ViT-B-32",
+        clip_pretrained: str = "openai",
+        tag_index_path: Optional[str] = None,
+        alpha: float = 0.7,
+        device: Optional[str] = None,
+    ):
+        self.alpha = alpha
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        print(f"[HybridRetriever] Using device: {self.device}")
+
+        # ── load CLIP text encoder ──
+        self._clip_model, _, _ = open_clip.create_model_and_transforms(
+            clip_model_name, pretrained=clip_pretrained
+        )
+        self._clip_tokenizer = open_clip.get_tokenizer(clip_model_name)
+        self._clip_model = self._clip_model.to(self.device).eval()
+        for p in self._clip_model.parameters():
+            p.requires_grad = False
+        print(f"[HybridRetriever] CLIP model '{clip_model_name}' loaded.")
+
+        # ── load image index ──
+        index_data = torch.load(image_index_path, map_location="cpu")
+        self.image_paths: List[str] = index_data["image_paths"]
+        self.image_embeddings: torch.Tensor = index_data["embeddings"]  # [N, D], normalised
+        print(f"[HybridRetriever] Image index loaded: {len(self.image_paths)} images.")
+
+        # ── optional tag index ──
+        self.tag_index: Optional[Dict[str, List[str]]] = None
+        if tag_index_path and Path(tag_index_path).exists():
+            with open(tag_index_path, "r", encoding="utf-8") as f:
+                self.tag_index = json.load(f)
+            print(f"[HybridRetriever] Tag index loaded: {len(self.tag_index)} entries.")
+        else:
+            print("[HybridRetriever] No tag index provided — running in pure semantic mode.")
+
+    # ─────────────────────────────────────────────────────────────────────────
+
+    @torch.no_grad()
+    def _encode_text(self, text: str) -> torch.Tensor:
+        """Encode a text string to a normalised CLIP embedding [1, D]."""
+        tokens = self._clip_tokenizer([text]).to(self.device)
+        emb = self._clip_model.encode_text(tokens)
+        emb = F.normalize(emb, dim=-1)
+        return emb.cpu()
+
+    def _compute_semantic_scores(self, query_emb: torch.Tensor) -> torch.Tensor:
+        """
+        Cosine similarity between query embedding and all image embeddings.
+        Returns [N] tensor in range [-1, 1].
+        """
+        # image_embeddings already normalised: sim = q · i^T
+        scores = (self.image_embeddings @ query_emb.T).squeeze(-1)  # [N]
+        return scores
+
+    def _compute_tag_scores(self, keywords: List[str]) -> torch.Tensor:
+        """
+        Simple keyword-overlap score with per-image tag lists.
+        score_i = |keywords ∩ tags_i| / max(|keywords|, 1)
+        Returns [N] tensor in range [0, 1].
+        """
+        if self.tag_index is None or not keywords:
+            return torch.zeros(len(self.image_paths))
+
+        kw_set = set(k.lower() for k in keywords)
+        scores = []
+        for path in self.image_paths:
+            tags = set(t.lower() for t in self.tag_index.get(path, []))
+            overlap = len(kw_set & tags)
+            scores.append(overlap / max(len(kw_set), 1))
+        return torch.tensor(scores, dtype=torch.float32)
+
+    def retrieve(
+        self,
+        query: "QueryComponents",
+        top_k: int = 9,
+        alpha: Optional[float] = None,
+        min_tag_score: float = 0.0,
+    ) -> List[Dict]:
+        """
+        Hybrid retrieval from a QueryComponents object.
+
+        Parameters
+        ----------
+        query : QueryComponents
+            Output of QueryProcessor.process().
+        top_k : int
+            Number of results to return.
+        alpha : float or None
+            Override instance-level alpha for this call.
+        min_tag_score : float
+            If >0 and tag_index is available, images with tag_score below this
+            threshold are excluded before semantic re-ranking.
+
+        Returns
+        -------
+        List of dicts:
+            [{
+                'rank': int,
+                'image_path': str,
+                'semantic_score': float,
+                'tag_score': float,
+                'final_score': float,
+            }, ...]
+        """
+        alpha = alpha if alpha is not None else self.alpha
+
+        # ── encode full normalised query for semantic search ──
+        text_to_encode = query.normalized_text or query.raw_text
+        query_emb = self._encode_text(text_to_encode)
+
+        # ── semantic scores ──
+        sem_scores = self._compute_semantic_scores(query_emb)        # [N]
+
+        # ── tag scores ──
+        tag_scores = self._compute_tag_scores(query.all_keywords)    # [N]
+
+        # ── optional hard tag filtering ──
+        if min_tag_score > 0.0 and self.tag_index is not None and query.all_keywords:
+            mask = tag_scores >= min_tag_score       # [N] bool
+            if mask.sum() >= top_k:
+                # enough candidates: restrict to those
+                sem_scores = torch.where(mask, sem_scores, torch.tensor(-1.0))
+                tag_scores = torch.where(mask, tag_scores, torch.tensor(0.0))
+
+        # ── min-max normalise tag_scores to [0, 1] (already in [0,1] but ensure) ──
+        # Normalise semantic scores to [0, 1] for fair fusion
+        sem_min, sem_max = sem_scores.min(), sem_scores.max()
+        sem_range = (sem_max - sem_min).clamp(min=1e-8)
+        sem_norm = (sem_scores - sem_min) / sem_range
+
+        tag_min, tag_max = tag_scores.min(), tag_scores.max()
+        tag_range = (tag_max - tag_min).clamp(min=1e-8)
+        tag_norm = (tag_scores - tag_min) / tag_range if tag_max > 0 else tag_scores
+
+        # ── fuse ──
+        final_scores = alpha * sem_norm + (1.0 - alpha) * tag_norm  # [N]
+
+        # ── top-k ──
+        k = min(top_k, len(self.image_paths))
+        top_indices = torch.topk(final_scores, k=k).indices.tolist()
+
+        results = []
+        for rank, idx in enumerate(top_indices, 1):
+            results.append({
+                "rank":           rank,
+                "image_path":     self.image_paths[idx],
+                "semantic_score": float(sem_scores[idx]),
+                "tag_score":      float(tag_scores[idx]),
+                "final_score":    float(final_scores[idx]),
+            })
+
+        return results
+
+    def retrieve_from_audio_embedding(
+        self,
+        audio_emb: torch.Tensor,
+        query: "QueryComponents",
+        top_k: int = 9,
+        alpha: Optional[float] = None,
+    ) -> List[Dict]:
+        """
+        Variant: use a pre-computed audio embedding for the semantic score
+        instead of re-encoding the text.  Used in speak2gallery where the
+        WhisperAudioEncoder output is already available.
+
+        Parameters
+        ----------
+        audio_emb : torch.Tensor
+            Normalised audio embedding [1, D] or [D].
+        query : QueryComponents
+            Used only for tag filtering.
+        """
+        alpha = alpha if alpha is not None else self.alpha
+
+        if audio_emb.dim() == 1:
+            audio_emb = audio_emb.unsqueeze(0)
+        audio_emb = audio_emb.cpu()
+
+        # semantic scores from audio embedding
+        sem_scores = (self.image_embeddings @ audio_emb.T).squeeze(-1)  # [N]
+
+        # tag scores
+        tag_scores = self._compute_tag_scores(query.all_keywords)
+
+        # normalise & fuse (same as retrieve())
+        sem_min, sem_max = sem_scores.min(), sem_scores.max()
+        sem_norm = (sem_scores - sem_min) / (sem_max - sem_min).clamp(min=1e-8)
+
+        tag_max = tag_scores.max()
+        tag_norm = (tag_scores / tag_max.clamp(min=1e-8)) if tag_max > 0 else tag_scores
+
+        final_scores = alpha * sem_norm + (1.0 - alpha) * tag_norm
+
+        k = min(top_k, len(self.image_paths))
+        top_indices = torch.topk(final_scores, k=k).indices.tolist()
+
+        results = []
+        for rank, idx in enumerate(top_indices, 1):
+            results.append({
+                "rank":           rank,
+                "image_path":     self.image_paths[idx],
+                "semantic_score": float(sem_scores[idx]),
+                "tag_score":      float(tag_scores[idx]),
+                "final_score":    float(final_scores[idx]),
+            })
+
+        return results
+
+
+# ─── CLI smoke-test ──────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    import sys
+    from query_processor import QueryProcessor
+
+    INDEX_PATH = sys.argv[1] if len(sys.argv) > 1 else "image_index.pt"
+    QUERY_TEXT = sys.argv[2] if len(sys.argv) > 2 else "a dog on a surfboard at the beach"
+
+    retriever = HybridRetriever(image_index_path=INDEX_PATH)
+    qp        = QueryProcessor(translate=False)
+    qc        = qp.process(QUERY_TEXT)
+
+    print("\n[Query Components]")
+    print(qc)
+
+    print("\n[Top-9 Results]")
+    for r in retriever.retrieve(qc, top_k=9):
+        print(f"  #{r['rank']:2d}  sem={r['semantic_score']:.4f}  "
+              f"tag={r['tag_score']:.4f}  final={r['final_score']:.4f}  "
+              f"{r['image_path']}")
+
+
+
+================================================
+FILE: retrieval/query_processor.py
+================================================
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+query_processor.py
+==================
+Step 3 & 4 of the hybrid search pipeline:
+
+  3. Normalize query
+       - optional translation to English (Hindi / Bengali → English)
+       - lowercasing
+       - remove filler phrases ("show me", "give me", "find", etc.)
+
+  4. Extract query components
+       - objects  : dog, bench, paper
+       - attributes : red, old, black
+       - relations  : on, beside, wearing
+       - quoted text : "hello world"
+
+Usage (standalone):
+    from query_processor import QueryProcessor
+    qp = QueryProcessor(translate=True)
+    result = qp.process("show me a red dog sitting on a bench")
+    print(result)
+"""
+
+import re
+import string
+from dataclasses import dataclass, field
+from typing import List, Optional
+
+# ─── optional heavy deps (graceful fallback) ──────────────────────────────────
+try:
+    import spacy
+    _SPACY_AVAILABLE = True
+except ImportError:
+    _SPACY_AVAILABLE = False
+
+try:
+    from transformers import pipeline as hf_pipeline
+    _HF_AVAILABLE = True
+except ImportError:
+    _HF_AVAILABLE = False
+
+# ─── filler phrases to strip from spoken queries ─────────────────────────────
+FILLER_PHRASES = [
+    # English
+    r"\bshow me\b", r"\bgive me\b", r"\bfind me\b", r"\bfind\b",
+    r"\bsearch for\b", r"\blook for\b", r"\bget me\b", r"\bi want to see\b",
+    r"\bcan you show\b", r"\bplease show\b", r"\bdisplay\b", r"\bfetch\b",
+    r"\bwhere is\b", r"\bwhere are\b",
+    # Hindi romanised / transliterated common phrases
+    r"\bdikha\b", r"\bdikhaao\b", r"\bkhojo\b", r"\blaao\b",
+    # Bengali romanised
+    r"\bdekhaao\b", r"\bkhunjo\b",
+]
+_FILLER_RE = re.compile("|".join(FILLER_PHRASES), re.IGNORECASE)
+
+# ─── common English stop words that are not useful for tag matching ───────────
+STOP_WORDS = {
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would", "could",
+    "should", "may", "might", "shall", "can", "and", "or", "but", "if",
+    "in", "at", "to", "for", "with", "about", "by", "from", "of", "that",
+    "this", "these", "those", "it", "its", "my", "me", "i", "you", "he",
+    "she", "we", "they", "some", "any", "which", "who", "what", "where",
+    "when", "how", "there", "here",
+}
+
+# ─── simple POS-tag lists (fallback when spaCy unavailable) ──────────────────
+# Top COCO object labels – used for keyword-based object detection fallback
+COCO_OBJECTS = {
+    "person", "people", "man", "woman", "boy", "girl", "child", "baby",
+    "bicycle", "bike", "car", "motorcycle", "airplane", "bus", "train",
+    "truck", "boat", "traffic", "fire", "hydrant", "stop", "sign",
+    "bench", "bird", "cat", "dog", "horse", "sheep", "cow", "elephant",
+    "bear", "zebra", "giraffe", "umbrella", "handbag", "bag", "tie",
+    "suitcase", "frisbee", "skis", "snowboard", "ball", "kite",
+    "baseball", "bat", "glove", "skateboard", "surfboard", "racket",
+    "bottle", "wine", "glass", "cup", "fork", "knife", "spoon", "bowl",
+    "banana", "apple", "sandwich", "orange", "broccoli", "carrot", "pizza",
+    "donut", "cake", "chair", "couch", "sofa", "plant", "bed", "table",
+    "toilet", "tv", "television", "laptop", "mouse", "remote", "keyboard",
+    "phone", "microwave", "oven", "toaster", "sink", "refrigerator", "fridge",
+    "book", "clock", "vase", "scissors", "teddy", "bear", "toothbrush",
+    "street", "road", "park", "beach", "ocean", "sea", "sky", "mountain",
+    "tree", "field", "grass", "snow", "rain", "building", "house", "room",
+    "kitchen", "bathroom", "bedroom", "door", "window", "wall", "floor",
+    "surfboard", "helmet", "hat", "shirt", "jacket", "pants", "shoes",
+}
+
+# Simple colour / attribute words (fallback)
+COMMON_ATTRIBUTES = {
+    "red", "blue", "green", "yellow", "orange", "purple", "pink", "black",
+    "white", "grey", "gray", "brown", "golden", "silver", "dark", "light",
+    "bright", "big", "large", "small", "little", "tall", "short", "long",
+    "young", "old", "new", "old", "wooden", "metal", "plastic", "glass",
+    "open", "closed", "empty", "full", "wet", "dry", "hot", "cold",
+    "happy", "sad", "angry", "running", "sitting", "standing", "lying",
+    "flying", "swimming", "eating", "drinking", "playing", "sleeping",
+}
+
+# Common spatial/other relations
+COMMON_RELATIONS = {
+    "on", "in", "at", "by", "near", "beside", "next", "behind", "front",
+    "above", "below", "under", "over", "between", "around", "through",
+    "wearing", "holding", "carrying", "riding", "with", "without",
+    "inside", "outside", "against", "along", "across", "toward",
+}
+
+
+@dataclass
+class QueryComponents:
+    """Structured output of query processing."""
+    raw_text: str = ""                      # original text (pre-normalization)
+    normalized_text: str = ""               # cleaned English text
+    detected_lang: str = "en"
+    objects: List[str] = field(default_factory=list)
+    attributes: List[str] = field(default_factory=list)
+    relations: List[str] = field(default_factory=list)
+    quoted_text: List[str] = field(default_factory=list)
+    all_keywords: List[str] = field(default_factory=list)  # union of above
+
+    def __repr__(self):
+        return (
+            f"QueryComponents(\n"
+            f"  raw='{self.raw_text}'\n"
+            f"  normalized='{self.normalized_text}'\n"
+            f"  lang='{self.detected_lang}'\n"
+            f"  objects={self.objects}\n"
+            f"  attributes={self.attributes}\n"
+            f"  relations={self.relations}\n"
+            f"  quoted={self.quoted_text}\n"
+            f"  keywords={self.all_keywords}\n"
+            f")"
+        )
+
+
+class QueryProcessor:
+    """
+    Processes a raw text query (already ASR-transcribed) into a structured
+    QueryComponents object suitable for hybrid retrieval.
+
+    Parameters
+    ----------
+    translate : bool
+        If True and transformers is available, translate Hindi/Bengali to
+        English before extraction.  Requires ``facebook/nllb-200-distilled-600M``
+        to be locally available or downloadable.
+    use_spacy : bool
+        If True and spaCy is installed with an English model, use it for
+        richer NER/POS extraction.  Falls back to keyword matching otherwise.
+    spacy_model : str
+        Name of the spaCy model to load (default: ``en_core_web_sm``).
+    """
+
+    def __init__(
+        self,
+        translate: bool = True,
+        use_spacy: bool = True,
+        spacy_model: str = "en_core_web_sm",
+    ):
+        self.translate = translate
+        self._translator = None
+        self._nlp = None
+
+        # ── optional spaCy ──
+        if use_spacy and _SPACY_AVAILABLE:
+            try:
+                import spacy
+                self._nlp = spacy.load(spacy_model)
+                print(f"[QueryProcessor] spaCy model '{spacy_model}' loaded.")
+            except OSError:
+                print(
+                    f"[QueryProcessor] spaCy model '{spacy_model}' not found. "
+                    f"Run: python -m spacy download {spacy_model}\n"
+                    f"Falling back to keyword extraction."
+                )
+
+        # ── optional translation pipeline ──
+        if translate and _HF_AVAILABLE:
+            self._load_translator()
+
+    def _load_translator(self):
+        """Lazy-load NLLB translation pipeline (same model used in training)."""
+        try:
+            from transformers import pipeline as hf_pipeline
+            print("[QueryProcessor] Loading NLLB translator (this may take a moment)…")
+            self._translator = hf_pipeline(
+                "translation",
+                model="facebook/nllb-200-distilled-600M",
+                device=-1,   # CPU; set to 0 for GPU
+            )
+            print("[QueryProcessor] Translator ready.")
+        except Exception as e:
+            print(f"[QueryProcessor] Could not load translator: {e}")
+            self._translator = None
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Public API
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def process(self, text: str, src_lang: str = "auto") -> QueryComponents:
+        """
+        Full pipeline: detect language → translate → normalize → extract.
+
+        Parameters
+        ----------
+        text : str
+            Raw transcribed text (from ASR or typed input).
+        src_lang : str
+            Source language hint: 'en', 'hi', 'bn', or 'auto' for detection.
+
+        Returns
+        -------
+        QueryComponents
+        """
+        qc = QueryComponents(raw_text=text)
+
+        # 1. detect language
+        qc.detected_lang = src_lang if src_lang != "auto" else self._detect_lang(text)
+
+        # 2. translate to English if needed
+        english_text = text
+        if qc.detected_lang in ("hi", "bn") and self._translator is not None:
+            english_text = self._translate_to_english(text, qc.detected_lang)
+        elif qc.detected_lang in ("hi", "bn"):
+            # Crude romanisation fallback: just keep as-is and hope for the best
+            # (CLIP text encoder can handle some Hindi/Bengali in CLIP space
+            #  because of the language-bridge training)
+            english_text = text
+
+        # 3. normalize
+        normalized = self._normalize(english_text)
+        qc.normalized_text = normalized
+
+        # 4. extract components
+        quoted = self._extract_quoted(normalized)
+        qc.quoted_text = quoted
+
+        # remove quotes from the text before further processing
+        clean = re.sub(r'"[^"]*"', " ", normalized)
+
+        if self._nlp is not None:
+            self._extract_with_spacy(clean, qc)
+        else:
+            self._extract_with_keywords(clean, qc)
+
+        # add quoted text entities as objects too
+        qc.objects = list(dict.fromkeys(qc.objects + quoted))  # deduplicate
+
+        # build all_keywords (unique, ordered)
+        all_kw = []
+        seen = set()
+        for lst in (qc.objects, qc.attributes, qc.relations, qc.quoted_text):
+            for w in lst:
+                w_l = w.lower()
+                if w_l not in seen:
+                    seen.add(w_l)
+                    all_kw.append(w_l)
+        qc.all_keywords = all_kw
+
+        return qc
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Internal helpers
+    # ─────────────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _detect_lang(text: str) -> str:
+        """
+        Heuristic language detection based on Unicode character ranges.
+        Returns 'hi', 'bn', or 'en'.
+        """
+        devanagari = sum(1 for c in text if "\u0900" <= c <= "\u097F")
+        bengali     = sum(1 for c in text if "\u0980" <= c <= "\u09FF")
+        total = len(text.strip()) or 1
+        if devanagari / total > 0.15:
+            return "hi"
+        if bengali / total > 0.15:
+            return "bn"
+        return "en"
+
+    def _translate_to_english(self, text: str, src_lang: str) -> str:
+        """Translate Hindi or Bengali text to English using NLLB."""
+        lang_map = {"hi": "hin_Deva", "bn": "ben_Beng"}
+        src_code = lang_map.get(src_lang, "hin_Deva")
+        try:
+            result = self._translator(
+                text,
+                src_lang=src_code,
+                tgt_lang="eng_Latn",
+                max_length=256,
+            )
+            translated = result[0]["translation_text"]
+            print(f"[QueryProcessor] Translated ({src_lang}→en): '{text}' → '{translated}'")
+            return translated
+        except Exception as e:
+            print(f"[QueryProcessor] Translation failed: {e}. Using raw text.")
+            return text
+
+    @staticmethod
+    def _normalize(text: str) -> str:
+        """Lowercase, strip fillers, remove punctuation (except quotes)."""
+        text = text.lower()
+
+        # extract and protect quoted substrings
+        quotes = re.findall(r'"[^"]*"', text)
+        placeholder_map = {}
+        for i, q in enumerate(quotes):
+            ph = f"__QUOTE{i}__"
+            placeholder_map[ph] = q
+            text = text.replace(q, ph, 1)
+
+        # strip filler phrases
+        text = _FILLER_RE.sub(" ", text)
+
+        # remove punctuation except apostrophes and placeholders
+        allowed = set(string.ascii_letters + string.digits + " _'")
+        text = "".join(c if c in allowed else " " for c in text)
+
+        # restore quoted substrings
+        for ph, q in placeholder_map.items():
+            text = text.replace(ph, q)
+
+        # collapse whitespace
+        text = re.sub(r"\s+", " ", text).strip()
+        return text
+
+    @staticmethod
+    def _extract_quoted(text: str) -> List[str]:
+        """Return list of strings inside double quotes."""
+        return re.findall(r'"([^"]+)"', text)
+
+    def _extract_with_spacy(self, text: str, qc: QueryComponents):
+        """
+        Use spaCy POS/NER tagging for richer extraction.
+        - NOUN / PROPN  → objects
+        - ADJ           → attributes
+        - Named Entities that are not proper nouns → objects
+        """
+        doc = self._nlp(text)
+
+        objects, attributes, relations = [], [], []
+
+        for token in doc:
+            w = token.text.lower()
+            if w in STOP_WORDS or len(w) < 2:
+                continue
+            if token.pos_ in ("NOUN", "PROPN"):
+                objects.append(w)
+            elif token.pos_ == "ADJ":
+                attributes.append(w)
+            elif token.pos_ == "ADP" and w in COMMON_RELATIONS:
+                relations.append(w)
+            elif token.pos_ == "VERB" and w in COMMON_RELATIONS:
+                relations.append(w)
+
+        # deduplicate preserving order
+        qc.objects    = list(dict.fromkeys(objects))
+        qc.attributes = list(dict.fromkeys(attributes))
+        qc.relations  = list(dict.fromkeys(relations))
+
+    @staticmethod
+    def _extract_with_keywords(text: str, qc: QueryComponents):
+        """
+        Fallback: simple token-level keyword matching against known word sets.
+        Works for COCO-domain queries without any ML dependency.
+        """
+        tokens = text.lower().split()
+        objects, attributes, relations = [], [], []
+        seen = set()
+
+        for tok in tokens:
+            clean_tok = tok.strip(string.punctuation)
+            if clean_tok in seen or clean_tok in STOP_WORDS or len(clean_tok) < 2:
+                continue
+            seen.add(clean_tok)
+            if clean_tok in COCO_OBJECTS:
+                objects.append(clean_tok)
+            elif clean_tok in COMMON_ATTRIBUTES:
+                attributes.append(clean_tok)
+            elif clean_tok in COMMON_RELATIONS:
+                relations.append(clean_tok)
+
+        qc.objects    = objects
+        qc.attributes = attributes
+        qc.relations  = relations
+
+
+# ─── Convenience function ────────────────────────────────────────────────────
+
+def process_query(text: str, src_lang: str = "auto", translate: bool = False) -> QueryComponents:
+    """
+    Module-level convenience wrapper. Creates a stateless QueryProcessor
+    (no translation, no spaCy by default for speed) and processes the query.
+    For repeated calls, instantiate QueryProcessor once and reuse it.
+    """
+    qp = QueryProcessor(translate=translate, use_spacy=True)
+    return qp.process(text, src_lang=src_lang)
+
+
+# ─── CLI demo ────────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    examples = [
+        ("show me a red dog sitting on a bench", "en"),
+        ("find me photos of a woman wearing a blue hat", "en"),
+        ("kutta surfboard par", "hi"),          # "dog on surfboard" in Hindi
+        ("একটি লাল গাড়ি রাস্তায়", "bn"),       # "a red car on the road" in Bengali
+        ('find images with "hello world"', "en"),
+        ("show me old wooden bench beside a tree", "en"),
+    ]
+
+    qp = QueryProcessor(translate=False, use_spacy=True)
+    print("=" * 60)
+    for text, lang in examples:
+        result = qp.process(text, src_lang=lang)
+        print(result)
+        print("-" * 60)
+
+
+
+================================================
+FILE: retrieval/retrieve_from_audio.py
+================================================
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+retrieve_from_audio.py  — hybrid pipeline
+==========================================
+  Audio → mel → WhisperAudioEncoder → audio_emb  (semantic path)
+  ASR text → QueryProcessor → keywords            (tag-filter path)
+  Hybrid fusion → top-K image paths
+
+Usage:
+    python retrieval/retrieve_from_audio.py \
+        --audio     query.wav \
+        --index     image_index.pt \
+        --checkpoint audio_encoder_multilingual.pt \
+        [--tag_index coco_tags.json] \
+        [--top_k 9] \
+        [--alpha 0.7]
+"""
+
+import argparse
+from pathlib import Path
+import sys
+
+import torch
+import torch.nn.functional as F
+import torchaudio
+
+# Allow imports from project root when called from any working directory
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from models.models_whisper import WhisperAudioEncoder
+from retrieval.query_processor import QueryProcessor
+from retrieval.hybrid_retrieval import HybridRetriever
+
+
+# ─── Audio helpers ────────────────────────────────────────────────────────────
+
+def load_and_preprocess_audio(audio_path: str, sample_rate: int = 16000,
+                               n_mels: int = 80) -> torch.Tensor:
+    """Load audio file → normalised mel spectrogram [1, n_mels, T]."""
+    wav, sr = torchaudio.load(audio_path)
+    wav = wav.mean(dim=0, keepdim=True)
+    if sr != sample_rate:
+        wav = torchaudio.functional.resample(wav, sr, sample_rate)
+
+    melspec = torchaudio.transforms.MelSpectrogram(
+        sample_rate=sample_rate, n_fft=400, hop_length=160, n_mels=n_mels)
+    db  = torchaudio.transforms.AmplitudeToDB(stype="power")
+    mel = db(melspec(wav))
+    mel = (mel - mel.mean()) / (mel.std() + 1e-6)
+    return mel   # [1, n_mels, T']
+
+
+def transcribe_audio(audio_path: str, model_size: str = "small") -> dict:
+    try:
+        import whisper
+        model  = whisper.load_model(model_size)
+        result = model.transcribe(audio_path, fp16=False)
+        return {"text": result["text"].strip(), "language": result.get("language", "en")}
+    except ImportError:
+        print("[ASR] openai-whisper not installed. Install: pip install openai-whisper")
+        return {"text": "", "language": "en"}
+    except Exception as e:
+        print(f"[ASR] Transcription error: {e}")
+        return {"text": "", "language": "en"}
+
+
+# ─── Main retrieval function ─────────────────────────────────────────────────
+
+@torch.no_grad()
+def retrieve_from_audio(
+    audio_path: str,
+    image_index_path: str,
+    checkpoint_path: str,
+    tag_index_path: str = None,
+    top_k: int = 9,
+    alpha: float = 0.7,
+    whisper_name: str = "openai/whisper-small",
+    embed_dim: int = 512,
+    n_mels: int = 80,
+    translate: bool = False,
+    whisper_asr_size: str = "small",
+):
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"[retrieve_from_audio] Device: {device}\n")
+
+    print(f"[Step 1/5] ASR transcription of: {audio_path}")
+    asr_result    = transcribe_audio(audio_path, model_size=whisper_asr_size)
+    transcribed   = asr_result["text"]
+    detected_lang = asr_result.get("language", "en")
+    print(f"  → '{transcribed}'  (lang={detected_lang})")
+
+    print("\n[Step 2/5] Normalising query & extracting components…")
+    qp = QueryProcessor(translate=translate, use_spacy=True)
+    qc = qp.process(transcribed, src_lang=detected_lang)
+    print(f"  normalized : '{qc.normalized_text}'")
+    print(f"  objects    : {qc.objects}")
+    print(f"  attributes : {qc.attributes}")
+    print(f"  relations  : {qc.relations}")
+    print(f"  keywords   : {qc.all_keywords}")
+
+    print("\n[Step 3/5] Computing audio embedding…")
+    mel = load_and_preprocess_audio(audio_path, n_mels=n_mels).to(device)
+
+    audio_model = WhisperAudioEncoder(
+        whisper_name=whisper_name, embed_dim=embed_dim, freeze_encoder=True
+    ).to(device)
+    state = torch.load(checkpoint_path, map_location=device)
+    audio_model.load_state_dict(state)
+    audio_model.eval()
+
+    audio_emb = F.normalize(audio_model(mel), dim=-1)
+    print(f"  Audio embedding shape: {tuple(audio_emb.shape)}")
+
+    print(f"\n[Step 4/5] Hybrid retrieval  (alpha={alpha})…")
+    retriever = HybridRetriever(
+        image_index_path=image_index_path,
+        tag_index_path=tag_index_path,
+        alpha=alpha,
+        device=device,
+    )
+    results = retriever.retrieve_from_audio_embedding(audio_emb.cpu(), qc, top_k=top_k)
+
+    print(f"\n[Step 5/5] Top-{top_k} results:")
+    print(f"  {'Rank':>4}  {'Semantic':>8}  {'Tag':>6}  {'Final':>7}  Path")
+    print("  " + "-" * 72)
+    for r in results:
+        path_short = r["image_path"][-60:] if len(r["image_path"]) > 60 else r["image_path"]
+        print(f"  #{r['rank']:>3}  {r['semantic_score']:>8.4f}  "
+              f"{r['tag_score']:>6.4f}  {r['final_score']:>7.4f}  …{path_short}")
+
+    return results
+
+
+# ─── CLI ─────────────────────────────────────────────────────────────────────
+
+def main():
+    p = argparse.ArgumentParser(
+        description="Hybrid audio-to-image retrieval (semantic + tag filtering)")
+    p.add_argument("--audio",        required=True)
+    p.add_argument("--index",        required=True)
+    p.add_argument("--checkpoint",   required=True)
+    p.add_argument("--tag_index",    default=None)
+    p.add_argument("--top_k",        type=int,   default=9)
+    p.add_argument("--alpha",        type=float, default=0.7)
+    p.add_argument("--whisper_name", default="openai/whisper-small")
+    p.add_argument("--whisper_asr",  default="small")
+    p.add_argument("--embed_dim",    type=int,   default=512)
+    p.add_argument("--translate",    action="store_true")
+    args = p.parse_args()
+
+    retrieve_from_audio(
+        audio_path       = args.audio,
+        image_index_path = args.index,
+        checkpoint_path  = args.checkpoint,
+        tag_index_path   = args.tag_index,
+        top_k            = args.top_k,
+        alpha            = args.alpha,
+        whisper_name     = args.whisper_name,
+        embed_dim        = args.embed_dim,
+        translate        = args.translate,
+        whisper_asr_size = args.whisper_asr,
+    )
+
+
+if __name__ == "__main__":
+    main()
+
+
+================================================
+FILE: scripts/01_build_dataset.sh
+================================================
+#!/usr/bin/env bash
+# =============================================================================
+# 01_build_dataset.sh
+# Stage 1: Build the multilingual COCO-TTS dataset
+#
+# Usage:
+#   chmod +x scripts/01_build_dataset.sh
+#   ./scripts/01_build_dataset.sh
+#
+# Edit the CONFIG section below (COCO paths and LIMIT) before running.
+# OUT_DIR is set automatically to the project root (where this repo lives).
+# =============================================================================
+
+set -euo pipefail
+
+# ── Resolve project root (directory containing this scripts/ folder) ──────────
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# =============================================================================
+# CONFIG — edit COCO paths and LIMIT before running
+# =============================================================================
+# Path to your COCO train2017 images directory
+COCO_IMAGES="/home/other/coco_dataset/train2017"
+# Path to the COCO captions annotation JSON
+COCO_CAPTIONS="/home/other/coco_dataset/annotations/captions_train2017.json"
+
+# Number of COCO captions to use (0 = all ~591k)
+LIMIT=10
+
+# TTS voices (edge-tts must be installed: pip install edge-tts)
+TTS_CMD_EN='edge-tts --text "{text}" --write-media "{out_wav}"'
+TTS_CMD_HI='edge-tts --text "{text}" --voice hi-IN-SwaraNeural --write-media "{out_wav}"'
+TTS_CMD_BN='edge-tts --text "{text}" --voice bn-IN-TanishaaNeural --write-media "{out_wav}"'
+# =============================================================================
+
+# All output lives inside the project root
+OUT_DIR="$PROJECT_DIR"
+
+echo "============================================================"
+echo "  Stage 1: Building Multilingual COCO-TTS Dataset"
+echo "============================================================"
+echo "  Project dir : $PROJECT_DIR"
+echo "  COCO images : $COCO_IMAGES"
+echo "  COCO caps   : $COCO_CAPTIONS"
+echo "  Output dir  : $OUT_DIR"
+echo "  Limit       : $LIMIT captions"
+echo "============================================================"
+
+cd "$PROJECT_DIR"
+
+# ── Step 1: English manifest + TTS ──────────────────────────────────────────
+echo ""
+echo "[1/4] Generating English TTS manifest…"
+python data/make_coco_tts_manifest.py \
+  --coco_images_dir   "$COCO_IMAGES" \
+  --coco_captions_json "$COCO_CAPTIONS" \
+  --out_audio_dir     "$OUT_DIR/tts_wavs" \
+  --out_manifest_jsonl "$OUT_DIR/coco_train_tts.jsonl" \
+  --limit             "$LIMIT" \
+  --tts_cmd           "$TTS_CMD_EN" \
+  --skip_missing_images
+echo "  ✓ English manifest + audio done."
+
+# ── Step 2: Multilingual manifest (Hindi + Bengali) ──────────────────────────
+echo ""
+echo "[2/4] Generating multilingual manifest (Hindi + Bengali)…"
+python data/make_multilingual_coco_tts_manifest.py \
+  --input_manifest_jsonl "$OUT_DIR/coco_train_tts.jsonl" \
+  --out_manifest_jsonl   "$OUT_DIR/coco_train_tts_multilingual.jsonl" \
+  --out_audio_dir        "$OUT_DIR/tts_wavs_multilingual" \
+  --include_english \
+  --limit                "$LIMIT" \
+  --tts_cmd_hi           "$TTS_CMD_HI" \
+  --tts_cmd_bn           "$TTS_CMD_BN" \
+  --skip_missing_images
+echo "  ✓ Multilingual manifest + audio done."
+
+# ── Step 3: Split English dataset ────────────────────────────────────────────
+echo ""
+echo "[3/4] Splitting English manifest into train/val…"
+python data/split.py --out_dir "$OUT_DIR"
+echo "  ✓ English split done."
+
+# ── Step 4: Split multilingual dataset ───────────────────────────────────────
+echo ""
+echo "[4/4] Splitting multilingual manifest into train/val…"
+python data/split_multilingual_manifest.py --out_dir "$OUT_DIR"
+echo "  ✓ Multilingual split done."
+
+echo ""
+echo "============================================================"
+echo "  Stage 1 COMPLETE"
+echo "============================================================"
+echo "  Output files in: $OUT_DIR"
+echo "    coco_train_tts.jsonl"
+echo "    coco_train_tts_multilingual.jsonl"
+echo "    coco_train_tts_train.jsonl / _val.jsonl"
+echo "    coco_train_tts_multilingual_train.jsonl / _val.jsonl"
+echo "    tts_wavs/                   (English audio)"
+echo "    tts_wavs_multilingual/hi/   (Hindi audio)"
+echo "    tts_wavs_multilingual/bn/   (Bengali audio)"
+echo "============================================================"
+
+
+================================================
+FILE: scripts/02_train.sh
+================================================
+#!/usr/bin/env bash
+# =============================================================================
+# 02_train.sh
+# Stage 2: Train the audio encoder
+#
+# Usage:
+#   MODEL=whisper ./scripts/02_train.sh      # default — best model
+#   MODEL=cnn     ./scripts/02_train.sh      # CNN encoder
+# =============================================================================
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Manifests and output live in the project root
+TRAIN_MANIFEST="$PROJECT_DIR/coco_train_tts_multilingual_train.jsonl"
+MODEL="${MODEL:-whisper}"   # whisper | cnn
+
+echo "============================================================"
+echo "  Stage 2: Training Audio Encoder"
+echo "  Model      : $MODEL"
+echo "  Project dir: $PROJECT_DIR"
+echo "  Manifest   : $TRAIN_MANIFEST"
+echo "============================================================"
+
+cd "$PROJECT_DIR"
+
+if [ "$MODEL" = "whisper" ]; then
+    echo ""
+    echo "[1/1] Training Whisper (small) + projection head — multilingual…"
+    python training/train_bridge_multilingual_whisper.py \
+        --manifest "$TRAIN_MANIFEST" \
+        --output   "$PROJECT_DIR/audio_encoder_multilingual.pt"
+    echo ""
+    echo "  ✓ Saved: $PROJECT_DIR/audio_encoder_multilingual.pt"
+
+elif [ "$MODEL" = "cnn" ]; then
+    echo ""
+    echo "[1/1] Training CNN encoder — multilingual…"
+    python training/train_bridge_multilingual_cnn.py \
+        --manifest "$TRAIN_MANIFEST" \
+        --output   "$PROJECT_DIR/audio_encoder_cnn_multilingual.pt"
+    echo ""
+    echo "  ✓ Saved: $PROJECT_DIR/audio_encoder_cnn_multilingual.pt"
+
+else
+    echo "ERROR: Unknown MODEL='$MODEL'. Use 'whisper' or 'cnn'."
+    exit 1
+fi
+
+echo ""
+echo "============================================================"
+echo "  Stage 2 COMPLETE"
+echo "============================================================"
+
+
+================================================
+FILE: scripts/03_build_index.sh
+================================================
+#!/usr/bin/env bash
+# =============================================================================
+# 03_build_index.sh
+# Stage 3: Build CLIP image index and keyword tag index
+# =============================================================================
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+TRAIN_MANIFEST="$PROJECT_DIR/coco_train_tts_multilingual_train.jsonl"
+IMAGE_INDEX="$PROJECT_DIR/image_index.pt"
+TAG_INDEX="$PROJECT_DIR/coco_tags.json"
+
+echo "============================================================"
+echo "  Stage 3: Building Retrieval Indexes"
+echo "  Project dir: $PROJECT_DIR"
+echo "============================================================"
+
+cd "$PROJECT_DIR"
+
+# ── Step 1: CLIP image index ─────────────────────────────────────────────────
+echo ""
+echo "[1/2] Building CLIP image embedding index…"
+python retrieval/build_image_index.py \
+  --manifest "$TRAIN_MANIFEST" \
+  --output   "$IMAGE_INDEX"
+echo "  ✓ Saved: $IMAGE_INDEX"
+
+# ── Step 2: Tag index ─────────────────────────────────────────────────────────
+echo ""
+echo "[2/2] Building keyword tag index…"
+python retrieval/build_tag_index.py \
+  --manifest "$TRAIN_MANIFEST" \
+  --output   "$TAG_INDEX"
+echo "  ✓ Saved: $TAG_INDEX"
+
+echo ""
+echo "============================================================"
+echo "  Stage 3 COMPLETE"
+echo "  Image index : $IMAGE_INDEX"
+echo "  Tag index   : $TAG_INDEX"
+echo "============================================================"
+
+
+================================================
+FILE: scripts/04_evaluate.sh
+================================================
+#!/usr/bin/env bash
+# =============================================================================
+# 04_evaluate.sh
+# Stage 4: Run full evaluation on the multilingual validation set
+#
+# Usage:
+#   MODEL=whisper ./scripts/04_evaluate.sh    # default
+#   MODEL=cnn     ./scripts/04_evaluate.sh
+#   MODEL=base    ./scripts/04_evaluate.sh    # random baseline
+# =============================================================================
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+VAL_MANIFEST="$PROJECT_DIR/coco_train_tts_multilingual_val.jsonl"
+MODEL="${MODEL:-whisper}"
+
+echo "============================================================"
+echo "  Stage 4: Evaluation"
+echo "  Model      : $MODEL"
+echo "  Project dir: $PROJECT_DIR"
+echo "  Val set    : $VAL_MANIFEST"
+echo "============================================================"
+
+cd "$PROJECT_DIR"
+
+if [ "$MODEL" = "whisper" ]; then
+    echo ""
+    echo "Running Whisper multilingual evaluation…"
+    python evaluation/eval_retrieval_multilingual_whisper.py \
+        --manifest   "$VAL_MANIFEST" \
+        --checkpoint "$PROJECT_DIR/audio_encoder_multilingual.pt"
+
+elif [ "$MODEL" = "cnn" ]; then
+    echo ""
+    echo "Running CNN multilingual evaluation…"
+    python evaluation/eval_retrieval_multilingual_cnn.py \
+        --manifest   "$VAL_MANIFEST" \
+        --checkpoint "$PROJECT_DIR/audio_encoder_cnn_multilingual.pt"
+
+elif [ "$MODEL" = "base" ]; then
+    echo ""
+    echo "Running random baseline evaluation…"
+    python evaluation/eval_retrieval_multilingual_base.py \
+        --manifest "$VAL_MANIFEST"
+
+else
+    echo "ERROR: Unknown MODEL='$MODEL'. Use whisper, cnn, or base."
+    exit 1
+fi
+
+echo ""
+echo "============================================================"
+echo "  Stage 4 COMPLETE"
+echo "============================================================"
+
+
+================================================
+FILE: scripts/05_run_app.sh
+================================================
+#!/usr/bin/env bash
+# =============================================================================
+# 05_run_app.sh
+# Stage 5: Launch the Speak2Gallery web application
+#
+# Usage:
+#   ./scripts/05_run_app.sh                         # HTTP on localhost:5000
+#   SSL_ADHOC=1 APP_PUBLIC_HOST=192.168.1.5 \
+#     ./scripts/05_run_app.sh                        # HTTPS (self-signed)
+#
+# Microphone access requires HTTPS when connecting from any non-localhost browser.
+# =============================================================================
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# ── Export settings ───────────────────────────────────────────────────────────
+export HOST="${HOST:-0.0.0.0}"
+export PORT="${PORT:-5000}"
+export APP_PUBLIC_HOST="${APP_PUBLIC_HOST:-localhost}"
+export SSL_ADHOC="${SSL_ADHOC:-0}"
+export SSL_CERT_FILE="${SSL_CERT_FILE:-}"
+export SSL_KEY_FILE="${SSL_KEY_FILE:-}"
+export FORCE_HTTPS="${FORCE_HTTPS:-0}"
+
+# Let app.py know where the project root is (models, indexes, etc.)
+export PROJECT_DIR="$PROJECT_DIR"
+
+SCHEME="http"
+if [ "$SSL_ADHOC" = "1" ] || [ -n "$SSL_CERT_FILE" ]; then
+    SCHEME="https"
+fi
+
+echo "============================================================"
+echo "  Speak2Gallery Web Application"
+echo "============================================================"
+echo "  Project dir : $PROJECT_DIR"
+echo "  URL         : $SCHEME://$APP_PUBLIC_HOST:$PORT"
+echo "  SSL         : $SCHEME"
+echo "============================================================"
+echo ""
+echo "  Mic access requires HTTPS when connecting from remote devices."
+echo "  For self-signed HTTPS: SSL_ADHOC=1 APP_PUBLIC_HOST=<ip> $0"
+echo ""
+echo "  Press Ctrl+C to stop."
+echo "============================================================"
+
+# Run app.py from the project root so all relative imports work correctly
+cd "$PROJECT_DIR"
+SSL_ADHOC=1 APP_PUBLIC_HOST=YOUR_IP python app/app.py
+
+
+================================================
+FILE: training/train_bridge_multilingual_cnn.py
+================================================
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Train the CNN audio encoder (multilingual).
+
+Usage:
+    python training/train_bridge_multilingual_cnn.py \
+        --manifest /path/to/coco_train_tts_multilingual_train.jsonl \
+        --output   /path/to/audio_encoder_cnn_multilingual.pt
+"""
+
+import argparse
+import torch
+import torch.nn.functional as F
+from torch.utils.data import DataLoader
+import open_clip
+
+import sys
+from pathlib import Path
+# Allow imports from project root when called from any working directory
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from data_coco_tts_multilingual import CocoTtsMultilingual, collate_coco_tts_multilingual
+from models.models_cnn import AudioEncoder
+
+
+def contrastive_loss(a, b, logit_scale):
+    logits = logit_scale.exp() * (a @ b.T)
+    labels = torch.arange(a.size(0), device=a.device)
+    loss_a2b = F.cross_entropy(logits, labels)
+    loss_b2a = F.cross_entropy(logits.T, labels)
+    return 0.5 * (loss_a2b + loss_b2a)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--manifest", type=str, required=True,
+                    help="Path to coco_train_tts_multilingual_train.jsonl")
+    ap.add_argument("--output", type=str, required=True,
+                    help="Output path for trained checkpoint .pt")
+    ap.add_argument("--epochs", type=int, default=10)
+    ap.add_argument("--batch_size", type=int, default=16)
+    ap.add_argument("--lr", type=float, default=1e-4)
+    ap.add_argument("--num_workers", type=int, default=4)
+    args = ap.parse_args()
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print("Device:", device)
+
+    clip_model, _, clip_preprocess = open_clip.create_model_and_transforms(
+        "ViT-B-32", pretrained="openai"
+    )
+    clip_tokenizer = open_clip.get_tokenizer("ViT-B-32")
+    clip_model = clip_model.to(device).eval()
+    for p in clip_model.parameters():
+        p.requires_grad = False
+
+    train_ds = CocoTtsMultilingual(
+        manifest_jsonl=args.manifest,
+        clip_preprocess=clip_preprocess,
+        clip_tokenizer=clip_tokenizer,
+    )
+
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=args.num_workers,
+        pin_memory=True,
+        collate_fn=collate_coco_tts_multilingual,
+    )
+
+    audio_model = AudioEncoder(n_mels=80, embed_dim=512).to(device)
+    optimizer   = torch.optim.AdamW(audio_model.parameters(), lr=args.lr, weight_decay=1e-4)
+    logit_scale = torch.nn.Parameter(torch.tensor(2.6592, device=device))
+
+    for epoch in range(args.epochs):
+        audio_model.train()
+        total_loss = 0.0
+
+        for batch in train_loader:
+            mel         = batch["mel"].to(device)
+            text_tokens = batch["text_tokens"].to(device)
+
+            with torch.no_grad():
+                text_emb = clip_model.encode_text(text_tokens)
+                text_emb = F.normalize(text_emb, dim=-1)
+
+            audio_emb = audio_model(mel)
+            loss = contrastive_loss(audio_emb, text_emb, logit_scale)
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            total_loss += loss.item()
+
+        print(f"Epoch {epoch + 1}/{args.epochs}: loss = {total_loss / len(train_loader):.4f}")
+
+    out_path = Path(args.output)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(audio_model.state_dict(), out_path)
+    print(f"Saved CNN model to: {out_path}")
+
+
+if __name__ == "__main__":
+    main()
+
+
+================================================
+FILE: training/train_bridge_multilingual_whisper.py
+================================================
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Train the Whisper audio encoder (multilingual) — BEST MODEL.
+
+Usage:
+    python training/train_bridge_multilingual_whisper.py \
+        --manifest /path/to/coco_train_tts_multilingual_train.jsonl \
+        --output   /path/to/audio_encoder_multilingual.pt
+"""
+
+import argparse
+import torch
+import torch.nn.functional as F
+from torch.utils.data import DataLoader
+import open_clip
+from tqdm import tqdm
+from pathlib import Path
+import sys
+
+# Allow imports from project root when called from any working directory
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from data_coco_tts_multilingual import CocoTtsMultilingual, collate_coco_tts_multilingual
+from models.models_whisper import WhisperAudioEncoder
+
+
+def contrastive_loss(a, b, logit_scale):
+    logits = logit_scale.exp() * (a @ b.T)
+    labels = torch.arange(a.size(0), device=a.device)
+    loss_a2b = F.cross_entropy(logits, labels)
+    loss_b2a = F.cross_entropy(logits.T, labels)
+    return 0.5 * (loss_a2b + loss_b2a)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--manifest", type=str, required=True,
+                    help="Path to coco_train_tts_multilingual_train.jsonl")
+    ap.add_argument("--output", type=str, required=True,
+                    help="Output path for trained checkpoint .pt")
+    ap.add_argument("--whisper_name", type=str, default="openai/whisper-small")
+    ap.add_argument("--embed_dim", type=int, default=512)
+    ap.add_argument("--epochs", type=int, default=10)
+    ap.add_argument("--batch_size", type=int, default=16)
+    ap.add_argument("--lr", type=float, default=1e-4)
+    ap.add_argument("--num_workers", type=int, default=4)
+    args = ap.parse_args()
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Device     : {device}")
+    print(f"Model      : {args.whisper_name}")
+    print(f"Manifest   : {args.manifest}")
+    print(f"Output     : {args.output}")
+    print(f"Epochs     : {args.epochs}")
+
+    # ── CLIP (frozen) ──
+    clip_model, _, clip_preprocess = open_clip.create_model_and_transforms(
+        "ViT-B-32", pretrained="openai"
+    )
+    clip_tokenizer = open_clip.get_tokenizer("ViT-B-32")
+    clip_model = clip_model.to(device).eval()
+    for p in clip_model.parameters():
+        p.requires_grad = False
+
+    # ── Dataset / DataLoader ──
+    train_ds = CocoTtsMultilingual(
+        manifest_jsonl=args.manifest,
+        clip_preprocess=clip_preprocess,
+        clip_tokenizer=clip_tokenizer,
+    )
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=args.num_workers,
+        pin_memory=True,
+        collate_fn=collate_coco_tts_multilingual,
+    )
+
+    # ── Audio encoder ──
+    audio_model = WhisperAudioEncoder(
+        whisper_name=args.whisper_name,
+        embed_dim=args.embed_dim,
+        freeze_encoder=True,
+    ).to(device)
+
+    # Only train the projection head (Whisper encoder is frozen)
+    trainable_params = [p for p in audio_model.parameters() if p.requires_grad]
+    optimizer   = torch.optim.AdamW(trainable_params, lr=args.lr, weight_decay=1e-4)
+    logit_scale = torch.nn.Parameter(torch.tensor(2.6592, device=device))
+
+    # ── Training loop ──
+    for epoch in range(args.epochs):
+        audio_model.train()
+        total_loss = 0.0
+
+        for batch in tqdm(train_loader, desc=f"Epoch {epoch + 1}/{args.epochs}"):
+            mel         = batch["mel"].to(device)
+            text_tokens = batch["text_tokens"].to(device)
+
+            with torch.no_grad():
+                text_emb = clip_model.encode_text(text_tokens)
+                text_emb = F.normalize(text_emb, dim=-1)
+
+            audio_emb = audio_model(mel)
+            # audio_emb already normalized inside WhisperAudioEncoder
+
+            loss = contrastive_loss(audio_emb, text_emb, logit_scale)
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            total_loss += loss.item()
+
+        avg_loss = total_loss / len(train_loader)
+        print(f"Epoch {epoch + 1}/{args.epochs}: loss = {avg_loss:.4f}")
+
+    # ── Save ──
+    out_path = Path(args.output)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(audio_model.state_dict(), out_path)
+    print(f"\nSaved Whisper model to: {out_path}")
+
+
+if __name__ == "__main__":
+    main()
+

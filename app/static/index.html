@@ -1,0 +1,1647 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>speak2gallery - Audio × Image Retrieval</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;700;800&family=DM+Mono:ital,wght@0,300;0,400;1,300&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --ink: #141410;
+  --ink2: #3d3d38;
+  --ink3: #8a8a82;
+  --paper: #f3ede0;
+  --paper2: #ebe4d4;
+  --paper3: #dfd7c5;
+  --accent: #c8381a;
+  --accent-dim: rgba(200,56,26,0.12);
+  --card: #faf6ed;
+  --border: rgba(20,20,16,0.11);
+  --border2: rgba(20,20,16,0.2);
+  --success: #2a7a3b;
+  --warn: #b06010;
+}
+
+html, body {
+  height: 100%;
+  font-family: 'Syne', sans-serif;
+  background: var(--paper);
+  color: var(--ink);
+  overflow: hidden;
+}
+
+.shell {
+  display: grid;
+  grid-template-rows: 56px 1fr 44px;
+  height: 100vh;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 2rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--card);
+  position: relative;
+  z-index: 10;
+}
+
+.logo {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.logo-text {
+  font-size: 1.35rem;
+  font-weight: 800;
+  letter-spacing: -0.04em;
+  color: var(--ink);
+}
+
+.logo-text span { color: var(--accent); }
+
+.logo-badge {
+  font-family: 'DM Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink3);
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+}
+
+.status-dot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--ink3);
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ink3);
+}
+
+.dot.ok { background: var(--success); }
+.dot.error { background: var(--accent); }
+.dot.loading { background: var(--warn); animation: blink 1s ease-in-out infinite; }
+
+@keyframes blink { 0%,100% { opacity:1; } 50% { opacity:0.3; } }
+
+.hdr-stat {
+  text-align: right;
+}
+.hdr-stat-val {
+  font-size: 1rem;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.03em;
+}
+.hdr-stat-lbl {
+  font-family: 'DM Mono', monospace;
+  font-size: 8px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--ink3);
+  margin-top: 2px;
+}
+
+main {
+  display: grid;
+  grid-template-columns: 340px 1fr;
+  overflow: hidden;
+}
+
+.side {
+  background: var(--card);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.side-section {
+  padding: 1.25rem 1.5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.sec-label {
+  font-family: 'DM Mono', monospace;
+  font-size: 8.5px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--ink3);
+  margin-bottom: 0.8rem;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sec-label::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.mode-toggle {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border: 1px solid var(--border2);
+  border-radius: 7px;
+  overflow: hidden;
+}
+
+.mode-btn {
+  padding: 0.65rem 0.8rem;
+  background: transparent;
+  border: none;
+  font-family: 'Syne', sans-serif;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--ink2);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: all 0.15s;
+  border-radius: 0;
+}
+
+.mode-btn svg { width: 13px; height: 13px; flex-shrink: 0; }
+.mode-btn:hover { background: var(--paper2); }
+.mode-btn.active { background: var(--ink); color: var(--paper); }
+
+.query-textarea {
+  width: 100%;
+  background: var(--paper);
+  border: 1px solid var(--border2);
+  border-radius: 7px;
+  padding: 0.8rem 1rem;
+  font-family: 'Syne', sans-serif;
+  font-size: 0.88rem;
+  color: var(--ink);
+  resize: none;
+  height: 88px;
+  outline: none;
+  transition: border-color 0.15s;
+  line-height: 1.5;
+}
+
+.query-textarea::placeholder { color: var(--ink3); font-style: italic; }
+.query-textarea:focus { border-color: var(--ink2); }
+
+.mic-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.9rem;
+  padding: 1.2rem;
+  background: var(--paper);
+  border: 1.5px dashed var(--border2);
+  border-radius: 7px;
+}
+
+.secure-note {
+  display: none;
+  margin-top: 0.8rem;
+  padding: 0.75rem 0.85rem;
+  background: rgba(176,96,16,0.1);
+  border: 1px solid rgba(176,96,16,0.22);
+  border-radius: 5px;
+  color: var(--warn);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+.secure-note.show { display: block; }
+
+.mic-ring {
+  position: relative;
+  width: 68px;
+  height: 68px;
+}
+
+.mic-btn-circle {
+  width: 68px;
+  height: 68px;
+  border-radius: 50%;
+  border: 2px solid var(--ink);
+  background: transparent;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+}
+
+.mic-btn-circle:hover { background: var(--paper2); }
+.mic-btn-circle.rec { border-color: var(--accent); background: var(--accent-dim); }
+.mic-btn-circle.rec { animation: mic-pulse 1.4s ease-in-out infinite; }
+.mic-btn-circle.disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+@keyframes mic-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(200,56,26,0.35); }
+  70% { box-shadow: 0 0 0 18px rgba(200,56,26,0); }
+  100% { box-shadow: 0 0 0 0 rgba(200,56,26,0); }
+}
+
+.mic-btn-circle svg { width: 26px; height: 26px; }
+.mic-btn-circle.rec svg { stroke: var(--accent); }
+
+.waveform {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  height: 24px;
+}
+
+.wb {
+  width: 3px;
+  border-radius: 3px;
+  background: var(--accent);
+  height: 4px;
+  transition: height 0.1s;
+}
+
+.recording .wb { animation: wbounce 0.5s ease-in-out infinite alternate; }
+.wb:nth-child(1) { animation-delay: 0s; }
+.wb:nth-child(2) { animation-delay: 0.07s; }
+.wb:nth-child(3) { animation-delay: 0.14s; }
+.wb:nth-child(4) { animation-delay: 0.21s; }
+.wb:nth-child(5) { animation-delay: 0.14s; }
+.wb:nth-child(6) { animation-delay: 0.07s; }
+.wb:nth-child(7) { animation-delay: 0s; }
+
+@keyframes wbounce { to { height: 20px; } }
+
+.mic-label {
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--ink3);
+  text-align: center;
+}
+
+.mic-label.rec { color: var(--accent); }
+
+.timer-display {
+  font-family: 'DM Mono', monospace;
+  font-size: 1.4rem;
+  font-weight: 300;
+  color: var(--accent);
+  letter-spacing: 0.06em;
+  display: none;
+}
+
+.trans-box {
+  margin-top: 0.7rem;
+  padding: 0.6rem 0.85rem;
+  background: var(--accent-dim);
+  border: 1px solid rgba(200,56,26,0.22);
+  border-radius: 5px;
+  display: none;
+}
+
+.trans-box.show { display: block; }
+
+.trans-lbl {
+  font-family: 'DM Mono', monospace;
+  font-size: 8px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 3px;
+}
+
+.trans-text {
+  font-size: 0.8rem;
+  color: var(--ink);
+  font-style: italic;
+  line-height: 1.5;
+}
+
+.params-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.param-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.param-name {
+  font-size: 0.78rem;
+  color: var(--ink2);
+  font-weight: 500;
+  flex: 1;
+}
+
+.param-ctrl {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.param-val {
+  font-family: 'DM Mono', monospace;
+  font-size: 11px;
+  color: var(--accent);
+  min-width: 28px;
+  text-align: right;
+}
+
+input[type="range"] {
+  -webkit-appearance: none;
+  width: 90px;
+  height: 2px;
+  background: var(--border2);
+  border-radius: 2px;
+  outline: none;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--ink);
+  cursor: pointer;
+}
+
+select.ctrl-select {
+  padding: 3px 7px;
+  background: var(--paper);
+  border: 1px solid var(--border2);
+  border-radius: 4px;
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  color: var(--ink);
+  cursor: pointer;
+  outline: none;
+}
+
+.qc-box {
+  padding: 0.75rem 1rem;
+  background: var(--paper);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  display: none;
+}
+
+.qc-box.show { display: block; }
+
+.qc-normalized {
+  font-size: 0.82rem;
+  color: var(--ink);
+  line-height: 1.5;
+  margin-bottom: 0.5rem;
+}
+
+.qc-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+
+.qc-tag {
+  font-family: 'DM Mono', monospace;
+  font-size: 9px;
+  padding: 2px 7px;
+  border-radius: 20px;
+  letter-spacing: 0.04em;
+}
+
+.qc-tag.obj { background: var(--accent-dim); color: var(--accent); }
+.qc-tag.attr { background: rgba(20,20,16,0.07); color: var(--ink2); }
+.qc-tag.rel { background: rgba(176,96,16,0.1); color: var(--warn); }
+
+.search-btn {
+  width: calc(100% - 3rem);
+  margin: 1rem 1.5rem 1.2rem;
+  padding: 0.85rem 1.5rem;
+  background: var(--ink);
+  color: var(--paper);
+  border: none;
+  border-radius: 7px;
+  font-family: 'Syne', sans-serif;
+  font-size: 0.88rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+
+.search-btn:hover { background: var(--ink2); transform: translateY(-1px); }
+.search-btn:active { transform: none; }
+.search-btn:disabled {
+  background: var(--ink3);
+  cursor: not-allowed;
+  transform: none;
+}
+
+.btn-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255,255,255,0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  display: none;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.btn-arrow { transition: transform 0.2s; }
+.search-btn:hover .btn-arrow { transform: translateX(3px); }
+
+.gallery {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--paper);
+}
+
+.gallery-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.85rem 1.5rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--card);
+  flex-shrink: 0;
+}
+
+.result-meta {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.result-count {
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--ink3);
+}
+
+.elapsed {
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  color: var(--ink3);
+}
+
+.sort-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sort-lbl {
+  font-family: 'DM Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink3);
+  margin-right: 4px;
+}
+
+.sort-btn {
+  padding: 3px 9px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: 'DM Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  color: var(--ink3);
+  cursor: pointer;
+  transition: all 0.12s;
+}
+
+.sort-btn:hover, .sort-btn.active {
+  background: var(--ink);
+  color: var(--paper);
+  border-color: var(--ink);
+}
+
+.gallery-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1.5rem;
+}
+
+.empty {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  color: var(--ink3);
+  text-align: center;
+  padding: 2rem;
+}
+
+.empty-glyph {
+  font-size: 3.5rem;
+  opacity: 0.15;
+  line-height: 1;
+}
+
+.empty-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--ink2);
+}
+
+.empty-sub {
+  font-family: 'DM Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  line-height: 1.7;
+  max-width: 320px;
+  color: var(--ink3);
+}
+
+.example-set {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: center;
+  margin-top: 0.5rem;
+}
+
+.ex-pill {
+  padding: 4px 12px;
+  background: var(--paper2);
+  border: 1px solid var(--border2);
+  border-radius: 20px;
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  color: var(--ink2);
+  cursor: pointer;
+  transition: all 0.13s;
+  letter-spacing: 0.02em;
+}
+
+.ex-pill:hover {
+  background: var(--ink);
+  color: var(--paper);
+  border-color: var(--ink);
+}
+
+.error-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  padding: 3rem;
+  color: var(--accent);
+  text-align: center;
+}
+
+.error-state .err-icon { font-size: 2rem; opacity: 0.5; }
+.error-state .err-msg { font-size: 0.85rem; color: var(--ink2); max-width: 340px; line-height: 1.6; }
+.error-state .err-detail { font-family: 'DM Mono', monospace; font-size: 10px; color: var(--ink3); }
+
+.skeleton-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+
+.skel-card {
+  aspect-ratio: 4/3;
+  border-radius: 8px;
+  background: var(--paper2);
+  position: relative;
+  overflow: hidden;
+}
+
+.skel-card::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg,
+    transparent 0%,
+    rgba(255,255,255,0.5) 50%,
+    transparent 100%);
+  background-size: 200% 100%;
+  animation: shimmer 1.3s ease-in-out infinite;
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.img-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+
+.img-card {
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--paper2);
+  border: 1px solid var(--border);
+  position: relative;
+  cursor: pointer;
+  aspect-ratio: 4/3;
+  transition: all 0.2s;
+}
+
+.img-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 10px 30px rgba(0,0,0,0.15);
+  border-color: var(--ink2);
+  z-index: 2;
+}
+
+.img-card img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  transition: transform 0.3s;
+}
+
+.img-card:hover img { transform: scale(1.03); }
+
+.img-card .rank-badge {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  width: 22px;
+  height: 22px;
+  background: rgba(20,20,16,0.8);
+  color: var(--paper);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  backdrop-filter: blur(4px);
+}
+
+.img-card .score-badge {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  padding: 2px 7px;
+  background: rgba(200,56,26,0.85);
+  color: #fff;
+  border-radius: 4px;
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  backdrop-filter: blur(4px);
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.img-card:hover .score-badge { opacity: 1; }
+
+.img-card .img-hover-info {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 0.75rem 0.9rem 0.6rem;
+  background: linear-gradient(to top, rgba(0,0,0,0.72) 0%, transparent 100%);
+  opacity: 0;
+  transition: opacity 0.2s;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.img-card:hover .img-hover-info { opacity: 1; }
+
+.hover-filename {
+  font-family: 'DM Mono', monospace;
+  font-size: 9px;
+  color: rgba(255,255,255,0.6);
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hover-scores {
+  display: flex;
+  gap: 8px;
+}
+
+.hover-score {
+  font-family: 'DM Mono', monospace;
+  font-size: 9px;
+  color: rgba(255,255,255,0.85);
+}
+
+.hover-score span { color: rgba(255,255,255,0.5); font-size: 8px; }
+
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.img-card {
+  animation: fadeUp 0.35s ease both;
+}
+
+.modal-bg {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(10,10,8,0.82);
+  z-index: 200;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(6px);
+  animation: fadeIn 0.15s ease;
+}
+
+.modal-bg.open { display: flex; }
+
+@keyframes fadeIn { from { opacity: 0; } }
+
+.modal {
+  background: var(--card);
+  border-radius: 12px;
+  padding: 0;
+  width: min(700px, 92vw);
+  max-height: 90vh;
+  overflow-y: auto;
+  position: relative;
+  border: 1px solid var(--border2);
+  animation: modalIn 0.2s ease;
+}
+
+@keyframes modalIn {
+  from { opacity: 0; transform: scale(0.97) translateY(6px); }
+}
+
+.modal-img-wrap {
+  position: relative;
+  aspect-ratio: 16/10;
+  background: var(--paper2);
+  overflow: hidden;
+  border-radius: 12px 12px 0 0;
+}
+
+.modal-img-wrap img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.modal-close-btn {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 30px;
+  height: 30px;
+  background: rgba(20,20,16,0.65);
+  border: none;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: #fff;
+  font-size: 14px;
+  backdrop-filter: blur(4px);
+  transition: background 0.15s;
+}
+
+.modal-close-btn:hover { background: rgba(20,20,16,0.9); }
+
+.modal-body {
+  padding: 1.25rem 1.5rem 1.5rem;
+}
+
+.modal-rank-line {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.modal-rank {
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: var(--ink3);
+  text-transform: uppercase;
+}
+
+.modal-fname {
+  font-family: 'DM Mono', monospace;
+  font-size: 11px;
+  color: var(--ink2);
+}
+
+.modal-scores {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 1.1rem;
+}
+
+.score-card {
+  padding: 0.65rem 0.85rem;
+  background: var(--paper);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.score-card-lbl {
+  font-family: 'DM Mono', monospace;
+  font-size: 8px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink3);
+}
+
+.score-card-val {
+  font-family: 'DM Mono', monospace;
+  font-size: 1.1rem;
+  font-weight: 400;
+  color: var(--ink);
+  margin-top: 3px;
+  letter-spacing: -0.01em;
+}
+
+.score-card-val.accent { color: var(--accent); }
+
+.score-bar-section { display: flex; flex-direction: column; gap: 8px; }
+
+.sbi-header {
+  display: flex;
+  justify-content: space-between;
+  font-family: 'DM Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  color: var(--ink3);
+  margin-bottom: 4px;
+}
+
+.sbi-track {
+  height: 3px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.sbi-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.55s ease;
+  width: 0%;
+}
+
+.sbi-fill.sem { background: var(--accent); }
+.sbi-fill.tag { background: var(--ink2); }
+.sbi-fill.fin { background: var(--ink); }
+
+footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 2rem;
+  border-top: 1px solid var(--border);
+  background: var(--card);
+  font-family: 'DM Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  color: var(--ink3);
+  flex-shrink: 0;
+}
+
+.pipeline-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.p-node {
+  padding: 2px 7px;
+  background: var(--paper2);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  font-size: 8px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.p-arr { color: var(--border2); font-size: 10px; }
+
+::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--ink3); }
+
+@media (max-width: 800px) {
+  main { grid-template-columns: 1fr; }
+  .side { max-height: 50vh; }
+}
+</style>
+</head>
+<body>
+
+<div class="shell">
+  <header>
+    <div class="logo">
+      <div class="logo-text">speak<span>2</span>gallery</div>
+      <div class="logo-badge">Audio × Image Retrieval</div>
+    </div>
+    <div class="header-right">
+      <div class="status-dot">
+        <div class="dot loading" id="status-dot"></div>
+        <span id="status-text">Connecting...</span>
+      </div>
+      <div class="hdr-stat">
+        <div class="hdr-stat-val" id="stat-encoder">Whisper</div>
+        <div class="hdr-stat-lbl">Encoder</div>
+      </div>
+      <div class="hdr-stat">
+        <div class="hdr-stat-val" id="stat-device">-</div>
+        <div class="hdr-stat-lbl">Device</div>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <aside class="side">
+      <div class="side-section">
+        <div class="sec-label">Input Mode</div>
+        <div class="mode-toggle">
+          <button class="mode-btn active" id="btn-text" onclick="setMode('text')">
+            <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5">
+              <rect x="1" y="1" width="12" height="12" rx="2"/>
+              <line x1="4" y1="5" x2="10" y2="5"/>
+              <line x1="4" y1="8" x2="8" y2="8"/>
+            </svg>
+            Text Query
+          </button>
+          <button class="mode-btn" id="btn-speech" onclick="setMode('speech')">
+            <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5">
+              <rect x="4" y="1" width="6" height="8" rx="3"/>
+              <path d="M2 7c0 2.8 2.2 5 5 5s5-2.2 5-5"/>
+              <line x1="7" y1="12" x2="7" y2="14"/>
+            </svg>
+            Speech
+          </button>
+        </div>
+      </div>
+
+      <div class="side-section" id="text-area">
+        <div class="sec-label">Query</div>
+        <textarea class="query-textarea" id="query-input"
+          placeholder="a dog on a surfboard... woman wearing red hat... crowded city street at night..."></textarea>
+      </div>
+
+      <div class="side-section" id="speech-area" style="display:none;">
+        <div class="sec-label">Voice Input</div>
+        <div class="mic-wrap" id="mic-wrap">
+          <div class="mic-ring">
+            <button class="mic-btn-circle" id="mic-btn" onclick="toggleRecord()">
+              <svg viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="1.8" id="mic-svg">
+                <rect x="9" y="2" width="10" height="15" rx="5"/>
+                <path d="M5 13c0 5 4 9 9 9s9-4 9-9"/>
+                <line x1="14" y1="22" x2="14" y2="26"/>
+              </svg>
+            </button>
+          </div>
+          <div class="waveform" id="waveform">
+            <div class="wb"></div><div class="wb"></div><div class="wb"></div>
+            <div class="wb"></div><div class="wb"></div><div class="wb"></div>
+            <div class="wb"></div>
+          </div>
+          <div class="timer-display" id="timer-display">5.0s</div>
+          <div class="mic-label" id="mic-label">Click mic to start recording</div>
+        </div>
+        <div class="secure-note" id="secure-note"></div>
+        <div class="trans-box" id="trans-box">
+          <div class="trans-lbl">Whisper Transcription</div>
+          <div class="trans-text" id="trans-text"></div>
+        </div>
+      </div>
+
+      <div class="side-section">
+        <div class="sec-label">Parameters</div>
+        <div class="params-grid">
+          <div class="param-row">
+            <span class="param-name">Top-K results</span>
+            <div class="param-ctrl">
+              <input type="range" min="3" max="9" step="3" value="9" id="topk"
+                oninput="document.getElementById('topk-val').textContent=this.value">
+              <span class="param-val" id="topk-val">9</span>
+            </div>
+          </div>
+          <div class="param-row">
+            <span class="param-name">Semantic weight α</span>
+            <div class="param-ctrl">
+              <input type="range" min="0" max="10" value="7" id="alpha"
+                oninput="document.getElementById('alpha-val').textContent=(this.value/10).toFixed(1)">
+              <span class="param-val" id="alpha-val">0.7</span>
+            </div>
+          </div>
+          <div class="param-row">
+            <span class="param-name">Language</span>
+            <select class="ctrl-select" id="lang-select">
+              <option value="auto">auto-detect</option>
+              <option value="en">English</option>
+              <option value="hi">Hindi</option>
+              <option value="bn">Bengali</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="side-section">
+        <div class="sec-label">Query Components</div>
+        <div class="qc-box" id="qc-box">
+          <div class="qc-normalized" id="qc-normalized"></div>
+          <div class="qc-tags" id="qc-tags"></div>
+        </div>
+        <div style="font-family:'DM Mono',monospace;font-size:10px;color:var(--ink3);padding-top:0.2rem;" id="qc-empty-note">
+          Results will show detected objects, attributes &amp; relations.
+        </div>
+      </div>
+
+      <div style="flex:1;"></div>
+
+      <button class="search-btn" id="search-btn" onclick="doSearch()">
+        <div class="btn-spinner" id="btn-spinner"></div>
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.8" id="btn-icon">
+          <circle cx="6" cy="6" r="4.2"/>
+          <line x1="9.2" y1="9.2" x2="13" y2="13"/>
+        </svg>
+        <span id="btn-text-span">Retrieve Images</span>
+        <svg class="btn-arrow" width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" stroke-width="1.8">
+          <line x1="2" y1="6.5" x2="11" y2="6.5"/>
+          <polyline points="7.5,3 11,6.5 7.5,10"/>
+        </svg>
+      </button>
+
+    </aside>
+
+    <div class="gallery">
+      <div class="gallery-top">
+        <div class="result-meta">
+          <div class="result-count" id="result-count">No results yet</div>
+          <div class="elapsed" id="elapsed-time"></div>
+        </div>
+        <div class="sort-row">
+          <span class="sort-lbl">Sort</span>
+          <button class="sort-btn active" onclick="sortResults('final')">Final</button>
+          <button class="sort-btn" onclick="sortResults('semantic')">Semantic</button>
+          <button class="sort-btn" onclick="sortResults('tag')">Tag</button>
+        </div>
+      </div>
+
+      <div class="gallery-scroll" id="gallery-scroll">
+        <div class="empty" id="empty-state">
+          <div class="empty-glyph">◎</div>
+          <div class="empty-title">Awaiting query</div>
+          <div class="empty-sub">
+            Speak or type a description. The system will retrieve matching COCO images
+            using hybrid semantic + tag-based retrieval.
+          </div>
+          <div class="example-set">
+            <button class="ex-pill" onclick="tryEx('a dog running on the beach')">dog on beach</button>
+            <button class="ex-pill" onclick="tryEx('woman wearing a red hat')">woman in hat</button>
+            <button class="ex-pill" onclick="tryEx('man playing tennis')">man with tennis racket</button>
+            <button class="ex-pill" onclick="tryEx('crowded city street at night')">city street</button>
+            <button class="ex-pill" onclick="tryEx('elephant walking in grass')">elephant</button>
+            <button class="ex-pill" onclick="tryEx('pizza on a wooden table')">pizza on table</button>
+            <button class="ex-pill" onclick="tryEx('children playing soccer in a field')">kids playing soccer</button>
+            <button class="ex-pill" onclick="tryEx('cat sitting on a couch')">cat on couch</button>
+          </div>
+        </div>
+
+        <div id="loading-state" style="display:none;">
+          <div class="skeleton-grid">
+            <div class="skel-card"></div><div class="skel-card"></div><div class="skel-card"></div>
+            <div class="skel-card"></div><div class="skel-card"></div><div class="skel-card"></div>
+            <div class="skel-card"></div><div class="skel-card"></div><div class="skel-card"></div>
+          </div>
+        </div>
+
+        <div id="error-state" style="display:none;" class="error-state">
+          <div class="err-icon">⚠</div>
+          <div class="err-msg" id="error-msg"></div>
+          <div class="err-detail" id="error-detail"></div>
+        </div>
+
+        <div id="results-state" style="display:none;">
+          <div class="img-grid" id="img-grid"></div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <footer>
+    <span>speak2gallery · COCO × CLIP × Whisper-small · audio_encoder_multilingual.pt</span>
+    <div class="pipeline-row">
+      <div class="p-node">Audio / Text</div><div class="p-arr">→</div>
+      <div class="p-node">ASR / NLP</div><div class="p-arr">→</div>
+      <div class="p-node">Normalize</div><div class="p-arr">→</div>
+      <div class="p-node">Extract</div><div class="p-arr">→</div>
+      <div class="p-node">Hybrid Retrieve</div><div class="p-arr">→</div>
+      <div class="p-node">Display</div>
+    </div>
+  </footer>
+</div>
+
+<div class="modal-bg" id="modal-bg" onclick="closeModal(event)">
+  <div class="modal" id="modal" onclick="event.stopPropagation()">
+    <div class="modal-img-wrap">
+      <img id="modal-img" src="" alt="Retrieved image">
+      <button class="modal-close-btn" onclick="forceCloseModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="modal-rank-line">
+        <span class="modal-rank" id="modal-rank-text"></span>
+        <span class="modal-fname" id="modal-fname"></span>
+      </div>
+      <div class="modal-scores" id="modal-scores"></div>
+      <div class="score-bar-section">
+        <div class="score-bar-item">
+          <div class="sbi-header"><span>Semantic (CLIP)</span><span id="sem-val"></span></div>
+          <div class="sbi-track"><div class="sbi-fill sem" id="sem-fill"></div></div>
+        </div>
+        <div class="score-bar-item">
+          <div class="sbi-header"><span>Tag overlap</span><span id="tag-val"></span></div>
+          <div class="sbi-track"><div class="sbi-fill tag" id="tag-fill"></div></div>
+        </div>
+        <div class="score-bar-item">
+          <div class="sbi-header"><span>Final (fused)</span><span id="fin-val"></span></div>
+          <div class="sbi-track"><div class="sbi-fill fin" id="fin-fill"></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+let currentMode = 'text';
+let isRecording = false;
+let mediaRecorder = null;
+let audioChunks = [];
+let recordTimer = null;
+let timerInterval = null;
+let allResults = [];
+let currentSort = 'final';
+const API = '';
+
+function isLocalhost() {
+  return ['localhost', '127.0.0.1'].includes(window.location.hostname);
+}
+
+function isSecureEnoughForMic() {
+  return window.isSecureContext || isLocalhost();
+}
+
+function secureUrlHint() {
+  const host = window.location.hostname || 'YOUR_HOST';
+  const port = window.location.port || '5000';
+  return `https://${host}:${port}`;
+}
+
+function showSecureNote(message) {
+  const el = document.getElementById('secure-note');
+  el.textContent = message;
+  el.classList.add('show');
+}
+
+function refreshMicAvailability() {
+  const micBtn = document.getElementById('mic-btn');
+  const speechBtn = document.getElementById('btn-speech');
+
+  if (isSecureEnoughForMic()) {
+    micBtn.classList.remove('disabled');
+    speechBtn.disabled = false;
+    document.getElementById('secure-note').classList.remove('show');
+    return;
+  }
+
+  micBtn.classList.add('disabled');
+  showSecureNote(`Microphone access needs HTTPS. Open this app at ${secureUrlHint()} after starting Flask with SSL.`);
+}
+
+async function checkStatus() {
+  try {
+    const r = await fetch(`${API}/api/status`);
+    const d = await r.json();
+    document.getElementById('status-dot').className = 'dot ok';
+    document.getElementById('status-text').textContent =
+      d.cuda ? 'GPU ready' : 'CPU ready';
+    document.getElementById('stat-device').textContent =
+      d.cuda ? 'CUDA' : 'CPU';
+
+    if (d.https) {
+      document.getElementById('status-text').textContent += ' · HTTPS';
+    }
+
+    if (!d.index_exists) {
+      setStatus('warn', 'image_index.pt not found');
+    }
+    if (!d.checkpoint_exists) {
+      setStatus('error', 'checkpoint not found');
+    }
+  } catch(e) {
+    document.getElementById('status-dot').className = 'dot error';
+    document.getElementById('status-text').textContent = 'Server offline';
+  } finally {
+    refreshMicAvailability();
+  }
+}
+
+function setStatus(type, msg) {
+  document.getElementById('status-dot').className = `dot ${type}`;
+  document.getElementById('status-text').textContent = msg;
+}
+
+checkStatus();
+
+function setMode(mode) {
+  currentMode = mode;
+  document.getElementById('btn-text').classList.toggle('active', mode === 'text');
+  document.getElementById('btn-speech').classList.toggle('active', mode === 'speech');
+  document.getElementById('text-area').style.display = mode === 'text' ? 'block' : 'none';
+  document.getElementById('speech-area').style.display = mode === 'speech' ? 'block' : 'none';
+  if (mode === 'speech') {
+    document.getElementById('trans-box').classList.remove('show');
+    refreshMicAvailability();
+  }
+}
+
+async function toggleRecord() {
+  if (!isRecording) {
+    await startRecord();
+  } else {
+    stopRecord();
+  }
+}
+
+async function startRecord() {
+  if (!isSecureEnoughForMic()) {
+    const msg = `Microphone access needs HTTPS. Restart the server with SSL and open ${secureUrlHint()}.`;
+    showSecureNote(msg);
+    alert(msg);
+    return;
+  }
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    audioChunks = [];
+    mediaRecorder = new MediaRecorder(stream);
+    mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
+    mediaRecorder.onstop = handleAudioStop;
+    mediaRecorder.start();
+    isRecording = true;
+
+    document.getElementById('mic-btn').classList.add('rec');
+    document.getElementById('mic-label').classList.add('rec');
+    document.getElementById('mic-label').textContent = 'Recording...';
+    document.getElementById('waveform').classList.add('recording');
+    document.getElementById('timer-display').style.display = 'block';
+
+    let t = 5.0;
+    document.getElementById('timer-display').textContent = t.toFixed(1) + 's';
+    timerInterval = setInterval(() => {
+      t -= 0.1;
+      if (t <= 0) t = 0;
+      document.getElementById('timer-display').textContent = t.toFixed(1) + 's';
+    }, 100);
+
+    recordTimer = setTimeout(() => stopRecord(), 5000);
+  } catch(e) {
+    alert('Microphone access denied or unavailable.\n\nError: ' + e.message);
+  }
+}
+
+function stopRecord() {
+  if (!isRecording) return;
+  clearTimeout(recordTimer);
+  clearInterval(timerInterval);
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+    mediaRecorder.stop();
+    mediaRecorder.stream.getTracks().forEach(t => t.stop());
+  }
+  isRecording = false;
+
+  document.getElementById('mic-btn').classList.remove('rec');
+  document.getElementById('mic-label').classList.remove('rec');
+  document.getElementById('mic-label').textContent = 'Processing audio...';
+  document.getElementById('waveform').classList.remove('recording');
+}
+
+async function handleAudioStop() {
+  const blob = new Blob(audioChunks, { type: 'audio/webm' });
+  document.getElementById('mic-label').textContent = 'Transcribing with Whisper...';
+  document.getElementById('timer-display').style.display = 'none';
+  await doAudioSearch(blob);
+  document.getElementById('mic-label').textContent = 'Click mic to start recording';
+}
+
+function tryEx(q) {
+  setMode('text');
+  document.getElementById('query-input').value = q;
+  doSearch();
+}
+
+async function doSearch() {
+  if (currentMode === 'text') {
+    await doTextSearch();
+  } else {
+    document.getElementById('mic-label').textContent = 'Click mic to start recording';
+    document.getElementById('trans-box').classList.remove('show');
+    await startRecord();
+  }
+}
+
+async function doTextSearch() {
+  const query = document.getElementById('query-input').value.trim();
+  if (!query) return;
+
+  const topK = parseInt(document.getElementById('topk').value);
+  const alpha = parseFloat(document.getElementById('alpha-val').textContent);
+  const lang = document.getElementById('lang-select').value;
+
+  setBtnLoading(true);
+  showState('loading');
+  const t0 = Date.now();
+
+  try {
+    const resp = await fetch(`${API}/api/search/text`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, top_k: topK, alpha, lang }),
+    });
+
+    const data = await resp.json();
+    const elapsed = ((Date.now() - t0) / 1000).toFixed(2);
+
+    if (!resp.ok || data.error) {
+      showError(data.error || 'Unknown error', `HTTP ${resp.status}`);
+      return;
+    }
+
+    showQueryComponents(data);
+    allResults = data.results;
+    currentSort = 'final';
+    renderResults(allResults, data.query, elapsed);
+
+  } catch(e) {
+    showError('Failed to connect to server.', 'Is app.py running on the expected port?');
+  } finally {
+    setBtnLoading(false);
+  }
+}
+
+async function doAudioSearch(blob) {
+  const topK = parseInt(document.getElementById('topk').value);
+  const alpha = parseFloat(document.getElementById('alpha-val').textContent);
+  const lang = document.getElementById('lang-select').value;
+
+  setBtnLoading(true);
+  showState('loading');
+  const t0 = Date.now();
+
+  try {
+    const form = new FormData();
+    form.append('audio', blob, 'recording.webm');
+    form.append('top_k', topK);
+    form.append('alpha', alpha);
+    form.append('lang', lang);
+
+    const resp = await fetch(`${API}/api/search/audio`, {
+      method: 'POST',
+      body: form,
+    });
+
+    const data = await resp.json();
+    const elapsed = ((Date.now() - t0) / 1000).toFixed(2);
+
+    if (!resp.ok || data.error) {
+      showError(data.error || 'Unknown error', `HTTP ${resp.status}`);
+      return;
+    }
+
+    if (data.transcription) {
+      document.getElementById('trans-text').textContent = `"${data.transcription}"`;
+      document.getElementById('trans-box').classList.add('show');
+      document.getElementById('query-input').value = data.transcription;
+    }
+
+    showQueryComponents(data);
+    allResults = data.results;
+    currentSort = 'final';
+    renderResults(allResults, data.transcription || '(audio)', elapsed);
+
+  } catch(e) {
+    showError('Failed to connect to server.', 'Is app.py running on the expected port?');
+  } finally {
+    setBtnLoading(false);
+  }
+}
+
+function showQueryComponents(data) {
+  const box = document.getElementById('qc-box');
+  document.getElementById('qc-empty-note').style.display = 'none';
+
+  document.getElementById('qc-normalized').textContent = data.normalized || data.query || '';
+
+  const tagsEl = document.getElementById('qc-tags');
+  tagsEl.innerHTML = '';
+  (data.objects || []).slice(0, 5).forEach(o =>
+    tagsEl.insertAdjacentHTML('beforeend', `<span class="qc-tag obj">${o}</span>`));
+  (data.attributes || []).slice(0, 4).forEach(a =>
+    tagsEl.insertAdjacentHTML('beforeend', `<span class="qc-tag attr">${a}</span>`));
+  (data.relations || []).slice(0, 3).forEach(r =>
+    tagsEl.insertAdjacentHTML('beforeend', `<span class="qc-tag rel">${r}</span>`));
+
+  box.classList.add('show');
+}
+
+function renderResults(results, query, elapsed) {
+  showState('results');
+  document.getElementById('result-count').textContent = `${results.length} images retrieved`;
+  document.getElementById('elapsed-time').textContent = elapsed ? `${elapsed}s` : '';
+
+  const grid = document.getElementById('img-grid');
+  grid.innerHTML = '';
+
+  results.forEach((r, i) => {
+    const card = document.createElement('div');
+    card.className = 'img-card';
+    card.style.animationDelay = `${i * 55}ms`;
+    card.innerHTML = `
+      <img src="${API}/image/${r.image_token}"
+           alt="Rank ${r.rank}"
+           loading="lazy"
+           onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+      <div style="display:none;position:absolute;inset:0;align-items:center;justify-content:center;background:var(--paper2);flex-direction:column;gap:4px;">
+        <span style="font-size:1.5rem;opacity:0.2">◻</span>
+        <span style="font-family:'DM Mono',monospace;font-size:9px;color:var(--ink3);">${r.image_filename}</span>
+      </div>
+      <div class="rank-badge">${r.rank}</div>
+      <div class="score-badge">${r.final_score.toFixed(3)}</div>
+      <div class="img-hover-info">
+        <div class="hover-filename">${r.image_filename}</div>
+        <div class="hover-scores">
+          <div class="hover-score"><span>sem</span> ${r.semantic_score.toFixed(4)}</div>
+          <div class="hover-score"><span>tag</span> ${r.tag_score.toFixed(4)}</div>
+          <div class="hover-score"><span>fin</span> ${r.final_score.toFixed(4)}</div>
+        </div>
+      </div>
+    `;
+    card.onclick = () => openModal(r);
+    grid.appendChild(card);
+  });
+}
+
+function sortResults(field) {
+  currentSort = field;
+  document.querySelectorAll('.sort-btn').forEach(b => {
+    b.classList.toggle('active',
+      b.textContent.trim().toLowerCase() === field ||
+      (field === 'final' && b.textContent.trim() === 'Final') ||
+      (field === 'semantic' && b.textContent.trim() === 'Semantic') ||
+      (field === 'tag' && b.textContent.trim() === 'Tag')
+    );
+  });
+
+  const sorted = [...allResults].sort((a, b) => {
+    if (field === 'semantic') return b.semantic_score - a.semantic_score;
+    if (field === 'tag') return b.tag_score - a.tag_score;
+    return b.final_score - a.final_score;
+  });
+
+  renderResults(sorted, '', '');
+}
+
+function openModal(r) {
+  document.getElementById('modal-img').src = `${API}/image/${r.image_token}`;
+  document.getElementById('modal-rank-text').textContent = `Rank #${r.rank}`;
+  document.getElementById('modal-fname').textContent = r.image_filename;
+
+  document.getElementById('modal-scores').innerHTML = `
+    <div class="score-card">
+      <div class="score-card-lbl">Final Score</div>
+      <div class="score-card-val accent">${r.final_score.toFixed(6)}</div>
+    </div>
+    <div class="score-card">
+      <div class="score-card-lbl">Semantic</div>
+      <div class="score-card-val">${r.semantic_score.toFixed(6)}</div>
+    </div>
+    <div class="score-card">
+      <div class="score-card-lbl">Tag Overlap</div>
+      <div class="score-card-val">${r.tag_score.toFixed(6)}</div>
+    </div>
+  `;
+
+  document.getElementById('sem-val').textContent = (r.semantic_score * 100).toFixed(1) + '%';
+  document.getElementById('tag-val').textContent = (r.tag_score * 100).toFixed(1) + '%';
+  document.getElementById('fin-val').textContent = (r.final_score * 100).toFixed(1) + '%';
+
+  document.getElementById('sem-fill').style.width = '0%';
+  document.getElementById('tag-fill').style.width = '0%';
+  document.getElementById('fin-fill').style.width = '0%';
+
+  document.getElementById('modal-bg').classList.add('open');
+
+  setTimeout(() => {
+    document.getElementById('sem-fill').style.width = (r.semantic_score * 100) + '%';
+    document.getElementById('tag-fill').style.width = (r.tag_score * 100) + '%';
+    document.getElementById('fin-fill').style.width = (r.final_score * 100) + '%';
+  }, 80);
+}
+
+function closeModal(e) {
+  if (e.target === document.getElementById('modal-bg')) {
+    forceCloseModal();
+  }
+}
+
+function forceCloseModal() {
+  document.getElementById('modal-bg').classList.remove('open');
+  document.getElementById('sem-fill').style.width = '0%';
+  document.getElementById('tag-fill').style.width = '0%';
+  document.getElementById('fin-fill').style.width = '0%';
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') forceCloseModal();
+});
+
+function showState(state) {
+  document.getElementById('empty-state').style.display = state === 'empty' ? 'flex' : 'none';
+  document.getElementById('loading-state').style.display = state === 'loading' ? 'block' : 'none';
+  document.getElementById('error-state').style.display = state === 'error' ? 'flex' : 'none';
+  document.getElementById('results-state').style.display = state === 'results' ? 'block' : 'none';
+}
+
+function showError(msg, detail) {
+  showState('error');
+  document.getElementById('error-msg').textContent = msg;
+  document.getElementById('error-detail').textContent = detail || '';
+  document.getElementById('result-count').textContent = 'Error';
+}
+
+function setBtnLoading(loading) {
+  const btn = document.getElementById('search-btn');
+  const spinner = document.getElementById('btn-spinner');
+  const icon = document.getElementById('btn-icon');
+  const txt = document.getElementById('btn-text-span');
+  btn.disabled = loading;
+  spinner.style.display = loading ? 'block' : 'none';
+  icon.style.display = loading ? 'none' : 'block';
+  txt.textContent = loading ? 'Retrieving...' : 'Retrieve Images';
+}
+
+document.getElementById('query-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    doSearch();
+  }
+});
+</script>
+
+</body>
+</html>
