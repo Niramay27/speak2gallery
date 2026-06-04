@@ -10,8 +10,8 @@ A multilingual zero-shot speech-to-image retrieval system. Speak in English, Hin
 speak2gallery/
 │
 ├── data/
-│   ├── make_coco_tts_manifest.py             # Step 1: Build English manifest + TTS
-│   ├── make_multilingual_coco_tts_manifest.py  # Step 2: Translate + multilingual TTS
+│   ├── make_coco_tts_manifest.py             # Step 1: Build English manifest and TTS
+│   ├── make_multilingual_coco_tts_manifest.py  # Step 2: Translate and multilingual TTS
 │   ├── split.py                              # Step 3: Split English dataset
 │   └── split_multilingual_manifest.py        # Step 4: Split multilingual dataset
 │
@@ -21,7 +21,7 @@ speak2gallery/
 │
 ├── training/
 │   ├── train_bridge_multilingual_cnn.py      # Train CNN (multilingual)
-│   └── train_bridge_multilingual_whisper.py  # Train Whisper (multilingual) ← BEST
+│   └── train_bridge_multilingual_whisper.py  # Train Whisper (multilingual)
 │
 ├── evaluation/
 │   ├── eval_retrieval_multilingual_base.py   # Eval random baseline
